@@ -5,14 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="${HGS_CORE_DIR:-$ROOT/core}"
 OUT="$ROOT/apple/build/rust"
 FRAMEWORKS="$ROOT/apple/Frameworks"
-CLEANER="$HOME/ashcode/diskcleaner/bin/diskcleaner"
 check_space() {
-  local code=0
-  DISKCLEANER_TUI=0 "$CLEANER" check || code=$?
-  if [[ "$code" != 0 && "$code" != 10 ]]; then
-    echo "Native build stopped: diskcleaner check returned $code." >&2
-    exit "$code"
-  fi
+  bash "$ROOT/scripts/check-build-space.sh"
 }
 check_space
 [[ -f "$CORE/hgs-ffi/include/hgs.h" ]] || { echo "Missing core C header." >&2; exit 1; }

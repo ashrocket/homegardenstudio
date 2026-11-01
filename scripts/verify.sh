@@ -19,7 +19,7 @@ for check in "${checks[@]}"; do
     privacy) required=(scripts/privacy-scan.sh scripts/privacy_scan.py scripts/tests/test_publication.py) ;;
     core) required=(core/Cargo.toml core/hgs-core/src/lib.rs core/hgs-ffi/src/lib.rs) ;;
     gateway) required=(gateway/package.json gateway/src/index.ts) ;;
-    apple) required=(apple/project.yml scripts/apple-verify.sh scripts/build-core-xcframework.sh) ;;
+    apple) required=(apple/project.yml scripts/apple-verify.sh scripts/build-core-xcframework.sh scripts/check-build-space.sh) ;;
   esac
   for path in "${required[@]}"; do
     if [ ! -f "$ROOT/$path" ]; then

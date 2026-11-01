@@ -2,11 +2,8 @@
 # Local unsigned/ad-hoc verification only. Does not archive, upload, or change accounts.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLEANER="$HOME/ashcode/diskcleaner/bin/diskcleaner"
 check_space() {
-  local code=0
-  DISKCLEANER_TUI=0 "$CLEANER" check || code=$?
-  if [[ "$code" != 0 && "$code" != 10 ]]; then echo "Native verification stopped: diskcleaner check returned $code." >&2; exit "$code"; fi
+  bash "$ROOT/scripts/check-build-space.sh"
 }
 command -v xcodegen >/dev/null || { echo "XcodeGen is required." >&2; exit 1; }
 check_space
