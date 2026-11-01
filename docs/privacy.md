@@ -4,7 +4,7 @@ title: HomeGardenStudio privacy policy
 
 # Privacy policy
 
-Effective November 1, 2026. This policy covers the HomeGardenStudio apps for iPhone, iPad and Mac, and the HomeGardenStudio gateway service they use for optional cloud features.
+**Draft for the first release.** HomeGardenStudio is in development; this document describes the intended data handling for the native iPhone, iPad and Mac apps and their optional gateway service. These statements must be checked against the final implementation before App Store submission.
 
 ## Your plans stay on your device
 
@@ -18,7 +18,7 @@ Cloud features are off until you use them.
 - **Purchases.** When you buy an unlock, the app sends Apple's signed transaction to the gateway so we can confirm it and add the included rendering credit once. We keep the transaction ID, product, date, store environment and any refund or revocation status.
 - **Rendering credit.** We keep a ledger of credits and debits for your account, and an optional monthly spending cap you set.
 - **Your provider keys.** If you add your own OpenAI, Anthropic or compatible-provider key, the gateway stores it encrypted, bound to your account and that provider. No feature shows it back to you or to anyone else. You can delete it at any time.
-- **Cloud renderings.** A cloud rendering sends your layout drawing and text description and, only after you confirm photo upload for that request, your selected source photo. They go to the provider you chose: OpenAI with our managed credit, or your own provider key. We keep the job record (time, provider, model, debit and result status). We don't store the images. The provider handles the request under its own terms.
+- **Cloud renderings.** A rendering sends your layout drawing and text description, and any selected source photo, to the provider you chose. Explicit upload consent covers both separate photos and photos embedded in the layout drawing. The provider is OpenAI for managed credit, or the service you deliberately selected for your own key. We keep the job record, including provider, model, debit and result status. To recover interrupted downloads, the planned gateway retains generated images encrypted and restricted to your account for up to seven days. The app acknowledges delivery only after saving the result. Expired undelivered managed results are refunded once; your own provider's charges follow its terms. Provider handling of uploaded inputs is governed by that provider's terms.
 - **Planning help with your own key.** Text questions about your plan go to the provider you choose, with your key. Apple Intelligence features run on your device.
 
 ## What we don't do
@@ -27,7 +27,9 @@ No advertising identifiers, no tracking across apps or websites, no third-party 
 
 ## Deleting your data
 
-In the app, open Settings, then Account, then Delete Account. That deletes your stored provider keys and sponsored windows and ends the account. We keep transaction and ledger rows, without any personal details, so that refunds and the store's accounting rules can be honored. Deleting the app or your plan files removes local data.
+The planned Delete Account action revokes the account's access secret and removes stored provider keys and retained rendering results. It closes sponsored usage and resolves pending credit reservations. Minimal transaction and ledger records remain for refunds and store accounting; these financial identifiers are still data associated with the account.
+
+Plan documents and exported originals can live separately from the app in Files, Finder or iCloud Drive. Delete those documents and any exports from their saved locations when you want to remove them. Uninstalling the app does not necessarily delete independent files, iCloud documents, backups or provider-held data.
 
 ## Contact
 

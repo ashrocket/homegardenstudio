@@ -4,6 +4,8 @@ title: HomeGardenStudio support
 
 # Support
 
+**Development documentation.** The workflows and US prices below describe the planned first release. The app is not yet available through TestFlight or the App Store.
+
 HomeGardenStudio is a garden planner for iPhone, iPad and Mac. Plans, imports and previews work on your device; cloud renderings are optional.
 
 ## Getting help
@@ -18,6 +20,8 @@ Open an issue at https://github.com/ashrocket/homegardenstudio/issues and say wh
 
 **How much does a cloud rendering cost?** The app shows the exact debit before you confirm each rendering. Local previews never use credit.
 
-**Is a cloud rendering a measured plan?** No. A rendering is an AI concept based on your layout and photo. Measurements come only from the dimensions you enter and from photos you've calibrated.
+**Is a cloud rendering a measured plan?** No. A rendering is an AI concept based on your layout and photo. A photo's two-point scale helps with approximate placement; perspective can still distort distances. Only dimensions or positions you explicitly verify through field measurement are labelled measured. Product dimensions keep their listing provenance. Editing geometry or removing its supporting source can invalidate that certainty.
+
+**What happens after the included credit runs out?** Local planning remains available. The planned choices are additional prepaid credit with a monthly spending cap, your own provider key, or an available funded sponsorship. Additional credit products and prices are not yet configured. No sponsorship is offered without approved inventory and a finite funded allowance.
 
 **Privacy:** see the [privacy policy](privacy.html).
