@@ -43,5 +43,10 @@ crons = ["*/10 * * * *"]
 [observability]
 enabled = true
 
-[observability.traces]
+[observability.logs]
 enabled = true
+# Keep only deliberate, redacted application events; no per-request invocation logs.
+invocation_logs = false
+
+[observability.traces]
+enabled = false

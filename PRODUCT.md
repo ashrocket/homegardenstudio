@@ -29,7 +29,7 @@ Store customer keys securely on Cloudflare: authenticated per-user custody, encr
 
 Verify StoreKit purchases server-side, bind entitlements to the customer, and grant each qualifying transaction's credit exactly once. Restore must not mint credit again. Refunds/revocations must be handled. The owner clarified that solo purchases receive $2, while bundle or paid bundle upgrades receive $5. The earlier suggestion of 5/10 starter renders is superseded.
 
-Do not promise that $2 buys 100 cloud images. Show the actual quoted debit before submitting a render. Local plan/3D previews do not consume cloud credit. Optional monthly usage budgets require a hard cap and no surprise overages; exact recurring product tiers remain to be finalized. Prefer prepaid optional spending and preserve purchased balances according to platform rules. Use Apple's applicable in-app purchase mechanisms, no hidden web checkout.
+Do not promise that $2 buys 100 cloud images. Show the actual quoted debit before submitting a render. Local plan/3D previews do not consume cloud credit. Additional usage uses optional prepaid credit with no automatic renewal (owner confirmed 2026-11-01). A user-selected monthly spending ceiling limits use of existing credit; changing it does not buy credit or create a subscription. Exact additional pack prices and credit amounts remain to be finalized. Preserve purchased balances according to platform rules. Use Apple's applicable in-app purchase mechanisms, no hidden web checkout.
 
 ## Optional sponsorship
 

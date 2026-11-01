@@ -22,6 +22,6 @@ Open an issue at https://github.com/ashrocket/homegardenstudio/issues and say wh
 
 **Is a cloud rendering a measured plan?** No. A rendering is an AI concept based on your layout and photo. A photo's two-point scale helps with approximate placement; perspective can still distort distances. Only dimensions or positions you explicitly verify through field measurement are labelled measured. Product dimensions keep their listing provenance. Editing geometry or removing its supporting source can invalidate that certainty.
 
-**What happens after the included credit runs out?** Local planning remains available. The planned choices are additional prepaid credit with a monthly spending cap, your own provider key, or an available funded sponsorship. Additional credit products and prices are not yet configured. No sponsorship is offered without approved inventory and a finite funded allowance.
+**What happens after the included credit runs out?** Local planning remains available. You can choose additional prepaid credit with no automatic renewal, your own provider key, or an available funded sponsorship. An optional monthly spending cap limits how much existing credit you use; raising the cap never charges you. Additional credit products and prices are not yet configured. No sponsorship is offered without approved inventory and a finite funded allowance.
 
 **Privacy:** see the [privacy policy](privacy.html).
