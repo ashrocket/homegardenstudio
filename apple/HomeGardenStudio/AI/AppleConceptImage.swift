@@ -4,6 +4,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import CryptoKit
 import Darwin
+import Observation
 
 /// Image Playground has no layout fidelity guarantee. This records the inputs supplied
 /// by the app, not edits the person may make inside Apple's system sheet.
@@ -34,6 +35,34 @@ nonisolated enum AppleConceptImage {
             }
             digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
         }
+    }
+
+    /// One accepted image stays in memory until attached, exported, or deliberately
+    /// discarded. An attachment failure must not destroy Apple's completed result.
+    @Observable @MainActor final class PendingResult {
+        let png: Data
+        let input: Input
+        private let document: PlanDocument
+        private(set) var record: RenderAttachmentRecord?
+        private(set) var exported = false
+        var needsProtection: Bool { record == nil && !exported }
+
+        init(png: Data, input: Input, document: PlanDocument) throws {
+            guard !png.isEmpty, png.count <= maxBytes else { throw Failure.tooLarge }
+            guard input.projectID == document.projectID else { throw Failure.wrongDocument }
+            self.png = png; self.input = input; self.document = document
+        }
+
+        @discardableResult func attach(to current: PlanDocument) throws -> RenderAttachmentRecord {
+            guard current === document, input.projectID == current.projectID else { throw Failure.wrongDocument }
+            if let record { return record }
+            let attached = try AppleConceptImage.attach(png, input: input, to: current)
+            record = attached
+            return attached
+        }
+
+        /// Call only from a successful fileExporter completion, never its dismissal.
+        func confirmExport() { exported = true }
     }
 
     enum Failure: LocalizedError {

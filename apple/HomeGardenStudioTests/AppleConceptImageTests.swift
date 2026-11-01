@@ -119,4 +119,49 @@ nonisolated final class AppleConceptImageTests: XCTestCase {
         XCTAssertTrue(full.renderRecords.isEmpty)
         XCTAssertEqual(try full.snapshot(contentType: .gardenPlan).project, json)
     }
+
+    @MainActor func testPendingImageSurvivesAttachmentFailureAndRetry() throws {
+        let json = try PlanDocument().snapshot(contentType: .gardenPlan).project
+        let document = try PlanDocument(project: json, attachmentLimit: 1)
+        let png = try AppleConceptImage.normalizedPNG(fixture())
+        let input = try AppleConceptImage.Input(projectID: document.projectID, projectJSON: json, prompt: "Frozen concept", layoutPNG: png, photoPNG: nil)
+        let pending = try AppleConceptImage.PendingResult(png: png, input: input, document: document)
+        for _ in 0..<2 { XCTAssertThrowsError(try pending.attach(to: document)) }
+        XCTAssertEqual(pending.png, png)
+        XCTAssertEqual(pending.input.digest, input.digest)
+        XCTAssertNil(pending.record)
+        XCTAssertTrue(pending.needsProtection)
+        XCTAssertFalse(pending.exported)
+        XCTAssertTrue(document.renderRecords.isEmpty)
+        XCTAssertEqual(try document.snapshot(contentType: .gardenPlan).project, json)
+    }
+
+    @MainActor func testPendingAttachmentIsIdempotentButNeverTransfersDocuments() throws {
+        let document = PlanDocument(), other = PlanDocument(), png = try AppleConceptImage.normalizedPNG(fixture())
+        let input = try AppleConceptImage.Input(projectID: document.projectID, projectJSON: document.snapshot(contentType: .gardenPlan).project, prompt: "Garden", layoutPNG: png, photoPNG: nil)
+        let pending = try AppleConceptImage.PendingResult(png: png, input: input, document: document)
+        XCTAssertThrowsError(try pending.attach(to: other))
+        XCTAssertTrue(pending.needsProtection)
+        let first = try pending.attach(to: document)
+        XCTAssertEqual(try pending.attach(to: document).id, first.id)
+        XCTAssertEqual(document.renderRecords.count, 1)
+        XCTAssertFalse(pending.needsProtection)
+        // Identity is checked before returning the already-attached record.
+        XCTAssertThrowsError(try pending.attach(to: other))
+        XCTAssertTrue(other.renderRecords.isEmpty)
+        XCTAssertEqual(pending.png, png)
+    }
+
+    @MainActor func testPendingExportConfirmationDoesNotClaimPlanAttachment() throws {
+        let document = PlanDocument(), png = try AppleConceptImage.normalizedPNG(fixture())
+        let input = try AppleConceptImage.Input(projectID: document.projectID, projectJSON: document.snapshot(contentType: .gardenPlan).project, prompt: "Garden", layoutPNG: png, photoPNG: nil)
+        let pending = try AppleConceptImage.PendingResult(png: png, input: input, document: document)
+        XCTAssertTrue(pending.needsProtection)
+        pending.confirmExport()
+        XCTAssertTrue(pending.exported)
+        XCTAssertFalse(pending.needsProtection)
+        XCTAssertNil(pending.record)
+        XCTAssertTrue(document.renderRecords.isEmpty)
+        XCTAssertEqual(pending.png, png)
+    }
 }
