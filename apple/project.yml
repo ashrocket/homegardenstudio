@@ -1,0 +1,84 @@
+name: HomeGardenStudio
+options:
+  minimumXcodeGenVersion: 2.45.4
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    DEVELOPMENT_TEAM: 6P24N3R4TP
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    PRODUCT_BUNDLE_IDENTIFIER: com.ashleyraiteri.homegardenstudio
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_HARDENED_RUNTIME: YES
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+    GENERATE_INFOPLIST_FILE: NO
+    CODE_SIGN_STYLE: Automatic
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  HomeGardenStudio:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources: [HomeGardenStudio]
+    info:
+      path: Configuration/Info.plist
+      properties:
+        CFBundleDisplayName: Home Garden Studio
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        ITSAppUsesNonExemptEncryption: NO
+        LSApplicationCategoryType: public.app-category.lifestyle
+        UISupportsDocumentBrowser: YES
+        LSSupportsOpeningDocumentsInPlace: YES
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Home Garden Studio Plan
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.ashleyraiteri.homegardenstudio.plan]
+            LSTypeIsPackage: YES
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.ashleyraiteri.homegardenstudio.plan
+            UTTypeDescription: Home Garden Studio Plan
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [hgsplan]
+          - UTTypeIdentifier: com.ashleyraiteri.homegardenstudio.feature
+            UTTypeDescription: Garden feature
+            UTTypeConformsTo: [public.data]
+    settings:
+      base:
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Configuration/macOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]": Configuration/iOS.entitlements
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - framework: Frameworks/HgsCore.xcframework
+        embed: false
+  HomeGardenStudioTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [HomeGardenStudioTests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.ashleyraiteri.homegardenstudio.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HomeGardenStudio.app/Contents/MacOS/HomeGardenStudio"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        CODE_SIGN_ENTITLEMENTS: ""
+    dependencies:
+      - target: HomeGardenStudio
+schemes:
+  HomeGardenStudio:
+    build:
+      targets:
+        HomeGardenStudio: all
+        HomeGardenStudioTests: [test]
+    test:
+      targets: [HomeGardenStudioTests]
