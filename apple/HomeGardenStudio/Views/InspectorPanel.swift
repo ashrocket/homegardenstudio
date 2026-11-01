@@ -31,7 +31,9 @@ struct InspectorPanel: View {
                     Button { if let id = issue.itemId { store.selection = [id] } } label: { Label(issue.message,systemImage:issue.severity == "warning" ? "exclamationmark.triangle" : "info.circle").font(.caption).multilineTextAlignment(.leading) }
                 }
             }
+            #if !HGS_APPLE_ONLY
             Section { Text("Free plan: add up to 12 features per plan. Existing work stays editable and exportable.").font(.caption).foregroundStyle(.secondary) }
+            #endif
         }.formStyle(.grouped).navigationTitle("Inspector")
     }
 }

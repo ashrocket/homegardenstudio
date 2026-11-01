@@ -1,6 +1,18 @@
 import SwiftUI
 import Observation
 
+#if HGS_APPLE_ONLY
+/// This build has no account, purchase, Keychain, gateway or provider service dependencies.
+@Observable @MainActor final class StudioServices: Entitlements {
+    private(set) var isPrepared = false
+    var isPreparing: Bool { false }
+    var isUnlocked: Bool { true }
+    let modeDescription = "Apple-only development edition. Local editing is fully unlocked."
+    let networkDescription = "Page URL imports contact the website you choose. Apple concept generation may use Apple Private Cloud Compute."
+    func prepare() async { isPrepared = true }
+    func retrySetup() async { await prepare() }
+}
+#else
 /// One stable entitlement owner serves every open document while account services load.
 @Observable @MainActor final class StudioServices: Entitlements {
     private(set) var account: AccountService?
@@ -77,3 +89,5 @@ nonisolated enum CreditDisplay {
         return NSDecimalNumber(decimal: rounded).intValue
     }
 }
+
+#endif

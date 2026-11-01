@@ -6,13 +6,17 @@ struct AssistantSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var local = LocalAssistant()
     @State private var task: GardenAssistTask = .critique
+    #if !HGS_APPLE_ONLY
     @State private var route = "apple"
+    #endif
     @State private var question = ""
+    #if !HGS_APPLE_ONLY
     @State private var endpoint = ""
     @State private var model = ""
     @State private var provider: GatewayProvider = .openai
     @State private var cloudConsent = false
     @State private var cloudOutput = ""
+    #endif
     @State private var notice: String?
     @State private var operation: Task<Void, Never>?
     var body: some View {
@@ -25,6 +29,10 @@ struct AssistantSheet: View {
                 Section("Ask for suggestions") {
                     Picker("Task", selection: $task) { ForEach(GardenAssistTask.allCases) { Text($0.title).tag($0) } }
                     TextField("Question or preferences (optional)", text: $question, axis: .vertical).lineLimit(2...5)
+                    #if HGS_APPLE_ONLY
+                    if let reason = local.availability { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                    Text("Uses Apple's on-device language model when supported. Suggestions stay separate from your plan until you choose to edit it.").font(.caption)
+                    #else
                     Picker("Assistant", selection: $route) { Text("Apple on-device").tag("apple"); Text("My local endpoint").tag("loopback"); if services.account?.accountID != nil { Text("My cloud provider").tag("cloud") } }
                         .onChange(of: route) { _, _ in cloudConsent = false; notice = nil }
                     if route == "apple" {
@@ -41,30 +49,42 @@ struct AssistantSheet: View {
                         Toggle("Send this plan's text and question to my selected provider", isOn: $cloudConsent)
                         Text("This sends layout context through the account service. Your provider bills text usage separately. No photos are sent by this text request.").font(.caption)
                     }
+                    #endif
                     Button("Generate reviewable suggestions") { generate() }
+                        #if HGS_APPLE_ONLY
+                        .disabled(local.isWorking || operation != nil || local.availability != nil)
+                        #else
                         .disabled(local.isWorking || operation != nil || (route == "apple" && local.availability != nil) || (route == "cloud" && !cloudConsent))
+                        #endif
                     if operation != nil { Button("Cancel request", role: .cancel) { operation?.cancel(); notice = "Cancelling request…" }; ProgressView() }
                     Text("Suggestions do not change geometry, measurements, source provenance or plant identification.").font(.caption).foregroundStyle(.secondary)
                 }
                 if let notice { Section { Text(notice).foregroundStyle(.secondary) } }
                 if !local.output.isEmpty { Section(local.outputLabel) { Text(local.output).textSelection(.enabled) } }
+                #if !HGS_APPLE_ONLY
                 if !cloudOutput.isEmpty { Section("Cloud provider suggestion · review before using") { Text(cloudOutput).textSelection(.enabled) } }
+                #endif
                 if !store.project.sources.filter({ $0.kind == "photo" }).isEmpty {
                     Section("Inspect a source on this device") {
                         ForEach(store.project.sources.filter { $0.kind == "photo" }) { source in NavigationLink(source.title) { LocalSourceAnalysisView(store: store, source: source) } }
                     }
                 }
             }.formStyle(.grouped).navigationTitle("Garden assistant").toolbar { Button("Done") { dismiss() } }
+                #if !HGS_APPLE_ONLY
                 .onChange(of: question) { _, _ in cloudConsent = false }
                 .onChange(of: task) { _, _ in cloudConsent = false }
                 .onChange(of: store.revision) { _, _ in cloudConsent = false }
+                #endif
                 .onDisappear { operation?.cancel() }
         }.frame(minWidth: 320, minHeight: 480)
     }
     private func generate() {
         notice = nil
-        let selectedTask = task, selectedRoute = route, selectedProvider = provider, selectedQuestion = question
+        let selectedTask = task, selectedQuestion = question
+        #if !HGS_APPLE_ONLY
+        let selectedRoute = route, selectedProvider = provider
         let selectedEndpoint = endpoint, selectedModel = model, approvedCloud = cloudConsent
+        #endif
         let context: String
         do {
             let brief = try store.engine.query(EngineQuery("render_brief"), as: RenderBrief.self).get()
@@ -73,6 +93,9 @@ struct AssistantSheet: View {
         operation = Task {
             defer { operation = nil }
             do {
+                #if HGS_APPLE_ONLY
+                try await local.useApple(task: selectedTask, brief: context, question: selectedQuestion)
+                #else
                 if selectedRoute == "apple" { try await local.useApple(task: selectedTask, brief: context, question: selectedQuestion) }
                 else if selectedRoute == "loopback" { try await local.useLoopback(configuration: LocalModelConfiguration(endpoint: selectedEndpoint, model: selectedModel), task: selectedTask, brief: context, question: selectedQuestion) }
                 else {
@@ -81,7 +104,14 @@ struct AssistantSheet: View {
                     let response = try await account.assist(provider: selectedProvider, task: cloudTask, layoutBrief: context, question: selectedQuestion)
                     try Task.checkCancellation(); cloudOutput = response.text
                 }
-            } catch is CancellationError { notice = "Request cancelled. A cloud provider may still have billed an already accepted request." }
+                #endif
+            } catch is CancellationError {
+                #if HGS_APPLE_ONLY
+                notice = "Request cancelled."
+                #else
+                notice = "Request cancelled. A cloud provider may still have billed an already accepted request."
+                #endif
+            }
             catch { notice = error.localizedDescription }
         }
     }

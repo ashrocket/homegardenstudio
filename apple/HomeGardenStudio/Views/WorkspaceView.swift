@@ -34,6 +34,9 @@ struct WorkspaceView:View {
     @State private var exportJSON = false
     @State private var exportPackage = false
     @State private var exportedPackage: PackageExport?
+    @State private var exportedPNG: PNGExport?
+    @State private var exportPNG = false
+    @State private var preparingPNG = false
     @State private var wideWorkspace = false
     @State private var exported = JSONPlanExport(data:Data())
     @State private var urlSheet = false
@@ -43,10 +46,15 @@ struct WorkspaceView:View {
     @State private var savedConcepts = false
     @State private var photo:PhotosPickerItem?
     @State private var showSampleWarning = false
+    @State private var assistantSheet = false
+    #if HGS_APPLE_ONLY
+    @State private var appleConceptSheet = false
+    @State private var editionInfo = false
+    #else
     @State private var accountSheet = false
     @State private var accountAfterTrial = false
-    @State private var assistantSheet = false
     @State private var renderSheet = false
+    #endif
     @State private var showJSONWarning = false
     var body:some View {
         NavigationStack {
@@ -80,14 +88,21 @@ struct WorkspaceView:View {
                 .inspector(isPresented:$inspector) { NavigationStack { InspectorPanel(store:store).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inspector = false }.accessibilityIdentifier("inspector.done") } } }.inspectorColumnWidth(min:280,ideal:330,max:450) }
                 .sheet(isPresented:Binding(get:{library && !wideWorkspace},set:{library = $0})) { NavigationStack { LibraryPanel(store:store).toolbar { Button("Done") { library = false } } }.frame(minWidth:320,minHeight:450).presentationDetents([.medium,.large]).presentationBackgroundInteraction(.enabled(upThrough:.medium)) }
                 .sheet(isPresented:$savedConcepts) { SavedConceptsSheet(document: store.document) }
-                .sheet(isPresented:$accountSheet) { AccountSheet(services:services) }
                 .sheet(isPresented:$assistantSheet) { AssistantSheet(store:store,services:services) }
+                #if HGS_APPLE_ONLY
+                .sheet(isPresented:$appleConceptSheet) { AppleConceptSheet(store:store) }
+                .sheet(isPresented:$editionInfo) { editionSheet }
+                #else
+                .sheet(isPresented:$accountSheet) { AccountSheet(services:services) }
                 .sheet(isPresented:$renderSheet) {
                     if let account = services.account, let renderer = services.renderer { CloudRenderSheet(store: store, account: account, renderer: renderer) }
                 }
+                #endif
                 .sheet(isPresented:$sources) { NavigationStack { SourcesPanel(store:store).toolbar { Button("Done") { sources = false } } }.frame(minWidth:320,minHeight:450) }
                 .sheet(isPresented:$urlSheet) { urlImportSheet }
+                #if !HGS_APPLE_ONLY
                 .sheet(isPresented:$store.showTrialLimit, onDismiss: { if accountAfterTrial { accountAfterTrial = false; accountSheet = true } }) { trialSheet }
+                #endif
                 .alert("Plan notice",isPresented:Binding(get:{store.error != nil},set:{if !$0 { store.error = nil }})) { Button("OK") { store.error = nil } } message: { Text(store.error ?? "") }
                 .confirmationDialog("Replace this plan with the synthetic sample?",isPresented:$showSampleWarning,titleVisibility:.visible) { Button("Open sample plan") { store.openSample(undoManager:undoManager) } } message: { Text("This replaces the current layout. You can undo the change; imported originals remain in the package.") }
                 .confirmationDialog("Replace this plan from JSON?",isPresented:$showJSONWarning,titleVisibility:.visible) { Button("Choose JSON…") { importJSON = true } } message: { Text("JSON contains layout and source metadata only. To preserve photos and attachments, open an .hgsplan package instead. You can undo this replacement.") }
@@ -96,6 +111,7 @@ struct WorkspaceView:View {
                 }
                 .fileImporter(isPresented:$importJSON,allowedContentTypes:[.json]) { result in importPlanJSON(result) }
                 .fileExporter(isPresented:$exportPackage,document:exportedPackage,contentType:.gardenPlan,defaultFilename:store.project.name) { result in if case .failure(let error) = result { store.error = error.localizedDescription } }
+                .fileExporter(isPresented:$exportPNG,document:exportedPNG,contentType:.png,defaultFilename:store.project.name + " layout") { result in if case .failure(let error) = result { store.error = error.localizedDescription } }
                 .fileExporter(isPresented:$exportJSON,document:exported,contentType:.json,defaultFilename:store.project.name) { result in if case .failure(let error) = result { store.error = error.localizedDescription } }
                 .onChange(of:photo) { _,item in
                     guard let item else { return }
@@ -113,6 +129,7 @@ struct WorkspaceView:View {
                         } catch { store.error = error.localizedDescription }
                     }
                 }
+                .overlay { if preparingPNG { ProgressView("Preparing layout PNG…").padding().background(.background,in:RoundedRectangle(cornerRadius:12)) } }
                 .overlay { if importing { ProgressView("Importing original…").padding().background(.background,in:RoundedRectangle(cornerRadius:12)) } }
                 #if os(macOS)
                 .windowToolbarFullScreenVisibility(.visible)
@@ -132,14 +149,20 @@ struct WorkspaceView:View {
             Button { undoManager?.redo() } label: { Label("Redo",systemImage:"arrow.uturn.forward") }.disabled(!(undoManager?.canRedo ?? false)).help(store.history.redoLabel ?? "Redo").accessibilityIdentifier("workspace.redo")
             Menu {
                 Button("Feature library",systemImage:"plus") { library = true }
-                Button("Account, purchases and providers",systemImage:"person.crop.circle") { accountSheet = true }
                 Button("Garden assistant",systemImage:"sparkles") { assistantSheet = true }
+                #if HGS_APPLE_ONLY
+                Button("Apple concept images", systemImage: "photo.badge.plus") { appleConceptSheet = true }
+                Button("About this Apple-only edition", systemImage: "info.circle") { editionInfo = true }
+                #else
+                Button("Account, purchases and providers",systemImage:"person.crop.circle") { accountSheet = true }
                 if services.renderer != nil { Button("Cloud concepts and saved requests", systemImage: "photo.badge.arrow.down") { renderSheet = true } }
+                #endif
                 Button("Sources and calibration",systemImage:"ruler") { sources = true }
                 Button("Inspector",systemImage:"sidebar.right") { inspector.toggle() }
                 if store.drawingBoundary { Button("Done drawing boundary") { store.finishBoundary(undoManager:undoManager) } }
                 Divider()
                 Button("Saved concept images", systemImage: "photo.stack") { savedConcepts = true }
+                Button("Export layout PNG (no photos)…") { prepareLayoutPNG() }.disabled(preparingPNG)
                 Button("Export portable plan…") {
                     do { exportedPackage = PackageExport(try store.document.snapshot(contentType: .gardenPlan)); exportPackage = true } catch { store.error = error.localizedDescription }
                 }
@@ -152,6 +175,18 @@ struct WorkspaceView:View {
             } label: { Label("Workspace actions",systemImage:"ellipsis.circle") }.accessibilityIdentifier("workspace.actions")
         }
     }
+    #if HGS_APPLE_ONLY
+    private var editionSheet: some View {
+        NavigationStack {
+            Form {
+                Text(services.modeDescription)
+                Text("The garden assistant uses Apple's on-device model when available. Image analysis uses Apple Vision and Natural Language.")
+                Text(services.networkDescription).font(.callout)
+                Text("Concept images are illustrations of possibilities. They do not establish measured geometry, plant species, or survey accuracy.").font(.caption).foregroundStyle(.secondary)
+            }.navigationTitle("Apple-only edition").toolbar { Button("Done") { editionInfo = false } }
+        }.frame(minWidth: 320, minHeight: 360)
+    }
+    #else
     private var trialSheet:some View {
         NavigationStack {
             VStack(alignment:.leading,spacing:20) {
@@ -164,6 +199,7 @@ struct WorkspaceView:View {
             }.padding(24).frame(maxWidth:420).navigationTitle("Free plan").toolbar { Button("Done") { store.showTrialLimit = false } }
         }
     }
+    #endif
     private var urlImportSheet:some View {
         NavigationStack {
             Form {
@@ -172,6 +208,17 @@ struct WorkspaceView:View {
                 Button("Import page") { let value = urlText; urlSheet = false; runImport { try await ImportService.url(value) } }.disabled(urlText.isEmpty || importing)
             }.navigationTitle("Import page URL").toolbar { Button("Cancel") { urlSheet = false } }
         }.frame(minWidth:320,minHeight:260)
+    }
+    private func prepareLayoutPNG() {
+        guard !preparingPNG else { return }
+        preparingPNG = true
+        Task {
+            defer { preparingPNG = false }
+            do {
+                let bytes = try await LayoutImageExport.png(store: store, includeBackdrop: false)
+                exportedPNG = PNGExport(data: bytes); exportPNG = true
+            } catch { store.error = error.localizedDescription }
+        }
     }
     private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
         guard !importing else { return false }

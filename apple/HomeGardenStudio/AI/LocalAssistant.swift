@@ -8,16 +8,27 @@ nonisolated enum GardenAssistTask: String, CaseIterable, Identifiable, Sendable 
     var title: String { switch self { case .describe: "Describe the plan"; case .plantIdeas: "Suggest planting ideas"; case .critique: "Review the layout" } }
 }
 nonisolated enum LocalAIError: Error, LocalizedError, Equatable, Sendable {
-    case unavailable(String), oversizedInput, invalidEndpoint, invalidModel, responseTooLarge, invalidResponse, failed
+    case unavailable(String), oversizedInput, responseTooLarge, invalidResponse, failed
+    #if !HGS_APPLE_ONLY
+    case invalidEndpoint, invalidModel
+    #endif
     var errorDescription: String? {
         switch self {
         case .unavailable(let reason): reason
         case .oversizedInput: "This request is too large for the local assistant. Use a smaller plan or shorter question."
+        #if !HGS_APPLE_ONLY
         case .invalidEndpoint: "Enter a complete HTTP or HTTPS chat endpoint on 127.0.0.1, ::1, or localhost, without credentials, a query, or a fragment."
         case .invalidModel: "Enter the model name served by your local endpoint."
+        #endif
+        #if HGS_APPLE_ONLY
+        case .responseTooLarge: "The image or Apple assistant result exceeds this feature's size limit."
+        case .invalidResponse: "The image or Apple assistant response could not be read."
+        case .failed: "The Apple assistant could not complete this request."
+        #else
         case .responseTooLarge: "The local model response exceeded the size limit."
         case .invalidResponse: "The local endpoint did not return a supported chat response."
         case .failed: "The local assistant could not complete this request. No cloud fallback was used."
+        #endif
         }
     }
 }
@@ -59,6 +70,7 @@ nonisolated enum AssistantPrompt {
         } catch is CancellationError { throw CancellationError() }
         catch { throw LocalAIError.failed }
     }
+    #if !HGS_APPLE_ONLY
     func useLoopback(configuration: LocalModelConfiguration, task: GardenAssistTask, brief: String, question: String,
                      transport: any LocalModelTransport = LoopbackModelTransport()) async throws {
         guard !isWorking else { return }
@@ -69,4 +81,5 @@ nonisolated enum AssistantPrompt {
         output = response
         outputLabel = "Local endpoint suggestion · \(configuration.endpoint.host ?? "loopback") · review before using"
     }
+    #endif
 }

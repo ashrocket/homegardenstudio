@@ -21,7 +21,7 @@ struct SavedConceptsSheet: View {
                         }.padding(.vertical, 8)
                     }
                 }
-                if document.renderRecords.isEmpty { ContentUnavailableView("No saved concepts", systemImage: "photo.stack", description: Text("Attach a completed cloud concept to keep its image with this plan.")) }
+                if document.renderRecords.isEmpty { ContentUnavailableView("No saved concepts", systemImage: "photo.stack", description: Text("Save a completed concept image to keep it with this plan.")) }
             }.navigationTitle("Saved concept images").toolbar { Button("Done") { dismiss() } }
                 .fileExporter(isPresented: $exporting, document: export, contentType: .png, defaultFilename: "Garden concept") { if case .failure(let failure) = $0 { error = failure.localizedDescription } }
                 .alert("Export notice", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
