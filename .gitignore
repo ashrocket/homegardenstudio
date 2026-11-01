@@ -20,3 +20,5 @@ xcuserdata/
 private/
 test-results/
 output/
+__pycache__/
+*.pyc
