@@ -95,7 +95,7 @@ struct AccountSheet: View {
                 .alert("Account notice", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
                 .confirmationDialog("Delete this cloud account?", isPresented: $deleteAccount, titleVisibility: .visible) {
                     Button("Delete account", role: .destructive) { run { try await services.deleteAccount() } }
-                } message: { Text("This deletes server-held provider keys, balances, account data and this account’s device render recovery records. Export recovery images first. Local plans and their attached images remain. Apple purchases and subscriptions are separate; account deletion does not cancel or refund them.") }
+                } message: { Text("This revokes cloud access and deletes provider keys, server image copies and this account’s device render recovery records. Export recovery images first. Transaction and operational records are retained. Local plans and their attached images remain. Apple purchases are separate; account deletion does not refund them.") }
         }.frame(minWidth: 320, minHeight: 480)
     }
     private func run(_ operation: @escaping @MainActor () async throws -> Void) { Task { do { try await operation() } catch { self.error = error.localizedDescription } } }
@@ -109,7 +109,7 @@ struct AccountSheet: View {
         case .recoveryRequired: "Account recovery is required. Saved credentials have been preserved; no replacement account was created."
         case .credentialConflict: "Another preserved account identity was found. Choose an account to continue; no identity or credit has been replaced."
         case .credentialSaveRequired: "The account needs a successful secure Keychain save before continuing."
-        case .deletionPending: "Server deletion completed; local secure cleanup is still pending. Retry deletion to finish."
+        case .deletionPending: "Cloud access was revoked; local secure cleanup is still pending. Retry deletion to finish."
         }
     }
     private func purchaseStatus(_ state: PurchaseState) -> String {

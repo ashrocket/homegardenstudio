@@ -60,9 +60,10 @@ import Observation
 }
 
 nonisolated enum CreditDisplay {
-    static func usd(_ micros: Int) -> String {
+    static func usd(_ micros: Int, locale: Locale = .current) -> String {
         let value = Decimal(micros) / Decimal(1_000_000)
-        let formatter = NumberFormatter(); formatter.numberStyle = .currency; formatter.currencyCode = "USD"
+        let formatter = NumberFormatter(); formatter.numberStyle = .currency; formatter.locale = locale; formatter.currencyCode = "USD"
+        formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 6
         return formatter.string(from: value as NSDecimalNumber) ?? "USD " + NSDecimalNumber(decimal: value).stringValue
     }
     static func parseBudget(_ text: String) -> Int? {
