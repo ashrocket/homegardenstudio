@@ -7,7 +7,7 @@ The Rust engine owns the project model, geometry, validation, history and persis
 - Lengths are metres (`f64`). Display units (imperial or metric) are a project preference only.
 - Plan space: origin top-left, `+x` right (east), `+y` down (south). An item's `x`,`y` is its footprint centre.
 - `rotation` is degrees clockwise in plan space, normalised to `[0, 360)`.
-- 3D space (scene query): `y` up; plan `x` → 3D `x`, plan `y` → 3D `z`.
+- 3D space (scene query): `y` up; plan `x` → 3D `x`, plan `y` → 3D `z`. `rotation_y` is degrees counter-clockwise about `+y` (right-handed), always `-rotation`; compound items rotate their parts about the item centre.
 - Limits: item width/depth `0.05..=100`, height `0..=30`, coordinates `|v| <= 10_000`, at most 5000 items, 64 structures, 2000 sources. Non-finite numbers are rejected.
 
 ## JSON model (serde, `snake_case`, unknown fields rejected on load)
@@ -131,7 +131,7 @@ Error codes: `INVALID_JSON`, `UNKNOWN_OP`, `NOT_FOUND`, `INVALID_VALUE`, `LOCKED
 | `hit_test` | `point` [x,y], `tolerance` | topmost item id or null (reverse draw order) |
 | `isometric` | `view_angle` deg | `{"faces":[{"item_id","kind","role":"top"|"left"|"right"|"ground","points":[[sx,sy],…],"depth"}],"bounds":{"min_x","min_y","max_x","max_y"}}`. Faces are sorted back to front. The projection rotates plan points by `view_angle`, then `sx = (x - y) * cos30°`, `sy = (x + y) * sin30° - z`. |
 | `scene` | — | `{"primitives":[{"item_id","shape":"box"|"cylinder"|"sphere","center":[x,y,z],"size":[sx,sy,sz],"rotation_y":deg,"material":…}],"ground":{"min":[x,z],"max":[x,z]}}`. Materials: `wood_dark`, `wood_light`, `stone`, `gravel`, `water`, `foliage`, `metal`, `fabric`, `structure`, `fire`. |
-| `render_brief` | optional `style` string | `{"prompt":string,"items":[{"id","label","dimensions_text","position_certainty","size_certainty"}],"uncertainties":[string],"layout_hash":hex}` (deterministic) |
+| `render_brief` | optional `style` string | `{"prompt":string,"items":[{"id","label","dimensions_text","position_certainty","size_certainty"}],"uncertainties":[string],"layout_hash":hex}` (deterministic; `layout_hash` is FNV-1a 64-bit of the compact snapshot JSON, 16 lowercase hex) |
 | `stats` | — | `{"item_count","by_kind":{kind:count},"area_m2_by_kind":{…}}` |
 
 Issue: `{"item_id":"i3"|null,"code":…,"severity":"warning"|"info","message":…}`. Codes:
