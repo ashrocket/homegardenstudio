@@ -144,7 +144,8 @@ private struct AppleConceptSession: View {
     }
 
     private func complete(_ url: URL, launch: Launch) {
-        guard ticket == launch.id, launch.prepared.document === store.document, !busy else { return }
+        guard self.launch?.id == launch.id, ticket == launch.id,
+              launch.prepared.document === store.document, !busy else { return }
         presented = false
         do {
             // Open synchronously while Apple's temporary URL is valid; decode on a worker.
@@ -164,9 +165,14 @@ private struct AppleConceptSession: View {
     }
 
     private func cancel(_ launch: Launch) {
-        guard ticket == launch.id else { return }
-        presented = false; self.launch = nil; ticket = UUID(); notice = "Cancelled. No concept was added to the plan."
+        // Completion owns the result once normalization begins. A late system
+        // cancellation must not invalidate that operation or strand its busy state.
+        guard self.launch?.id == launch.id, ticket == launch.id, !busy else { return }
+        invalidate(); notice = "Cancelled. No concept was added to the plan."
     }
 
-    private func invalidate() { ticket = UUID(); work?.cancel(); work = nil }
+    private func invalidate() {
+        ticket = UUID(); work?.cancel(); work = nil
+        busy = false; launch = nil; presented = false
+    }
 }
