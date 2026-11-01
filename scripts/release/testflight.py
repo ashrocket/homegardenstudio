@@ -115,8 +115,9 @@ class Release:
         profile = "HomeGardenStudio iOS App Store" if cfg.platform == "ios" else "HomeGardenStudio Mac App Store"
         self.phase("archive_started")
         self.run("xcodebuild", "-project", "HomeGardenStudio.xcodeproj", "-scheme", "HomeGardenStudio",
-                 "-configuration", "Release", "-destination", destination, "-archivePath", archive,
+                 "-configuration", "Release", "-jobs", "1", "-destination", destination, "-archivePath", archive,
                  "-derivedDataPath", self.directory / "derived", "CODE_SIGN_STYLE=Manual",
+                 "OTHER_SWIFT_FLAGS=$(inherited) -j1",
                  "CODE_SIGN_IDENTITY=Apple Distribution", "DEVELOPMENT_TEAM=" + TEAM,
                  "PROVISIONING_PROFILE_SPECIFIER=" + profile, "CURRENT_PROJECT_VERSION=" + number,
                  "MARKETING_VERSION=" + cfg.version, "archive", cwd=apple)
