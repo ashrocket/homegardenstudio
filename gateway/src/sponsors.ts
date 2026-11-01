@@ -1,5 +1,7 @@
 import { HttpError, json } from "./errors";
 import { assertSql, getBalances } from "./ledger";
+import { cheapestPrice, managedStatus } from "./config";
+import { entitlementEnvironment } from "./storekit";
 import type { AuthedCtx, Env } from "./types";
 import { isGuardFailure, isInt } from "./util";
 
@@ -16,12 +18,19 @@ export async function settleWindows(env: Env, now: number, accountId?: string): 
   }
 }
 export async function offers(ctx: AuthedCtx): Promise<Response> {
+  // Gate before returning sponsor identity/disclosure, including through /v1/me.
+  if(entitlementEnvironment(ctx.env)!=="production" || !managedStatus(ctx.env).available) return json({offers:[]});
+  const cheapest=cheapestPrice(ctx.env);
+  if(!Number.isFinite(cheapest) || cheapest<=0 || (await getBalances(ctx.env.DB,ctx.accountId)).production>=cheapest) return json({offers:[]});
+  const spent=await ctx.env.DB.prepare("SELECT spent_micros FROM operator_spend WHERE day_key=?")
+    .bind(new Date(ctx.deps.now()).toISOString().slice(0,10)).first<{spent_micros:number}>();
+  if(Number(ctx.env.MANAGED_DAILY_LIMIT_MICROS)-(spent?.spent_micros??0)<cheapest) return json({offers:[]});
   const rows = await ctx.env.DB.prepare(`SELECT o.id offer_id,s.name sponsor_name,s.category,s.paid_for_by,o.disclosure,o.report_url,s.budget_remaining_micros
     FROM sponsor_offers o JOIN sponsors s ON s.id=o.sponsor_id WHERE ${AVAILABLE} AND s.budget_remaining_micros>0`)
     .bind(ctx.accountId,ctx.deps.now()).all<Record<string,unknown>>();
   const out = [];
   for (const row of rows.results) {
-    const windows = await ctx.env.DB.prepare("SELECT minutes,credit_cap_micros FROM sponsor_offer_windows WHERE offer_id=? AND credit_cap_micros<=? ORDER BY minutes").bind(row.offer_id,row.budget_remaining_micros).all();
+    const windows = await ctx.env.DB.prepare("SELECT minutes,credit_cap_micros FROM sponsor_offer_windows WHERE offer_id=? AND credit_cap_micros<=? AND credit_cap_micros>=? ORDER BY minutes").bind(row.offer_id,row.budget_remaining_micros,cheapest).all();
     if (windows.results.length) {
       const {budget_remaining_micros: _,...publicRow} = row;
       out.push({...publicRow,why_shown:"Available to anyone whose prepaid credit has run out. Not based on photos, location or activity.",windows:windows.results});
@@ -32,7 +41,7 @@ export async function offers(ctx: AuthedCtx): Promise<Response> {
 export async function createWindow(ctx: AuthedCtx, input: Record<string,unknown>, cheapest: number): Promise<Response> {
   const {env,accountId,deps} = ctx, now = deps.now(), db=env.DB;
   if (typeof input.offer_id !== "string" || !isInt(input.minutes)) throw new HttpError(400,"INVALID_WINDOW","Choose an available funded window.");
-  if (cheapest <= 0) throw new HttpError(503,"MANAGED_UNAVAILABLE","Managed rendering is unavailable.");
+  if (entitlementEnvironment(env)!=="production" || !managedStatus(env).available || !Number.isFinite(cheapest) || cheapest <= 0) throw new HttpError(503,"MANAGED_UNAVAILABLE","Managed rendering is unavailable.");
   await settleWindows(env,now,accountId);
   const offer = await db.prepare(`SELECT o.id,o.sponsor_id,w.credit_cap_micros FROM sponsor_offers o JOIN sponsors s ON s.id=o.sponsor_id
     JOIN sponsor_offer_windows w ON w.offer_id=o.id WHERE ${AVAILABLE} AND o.id=?3 AND w.minutes=?4 AND s.budget_remaining_micros>=w.credit_cap_micros`)

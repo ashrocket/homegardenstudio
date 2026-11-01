@@ -405,6 +405,68 @@ describe("finite sponsorship and deletion",()=>{
     expect((await env.DB.prepare("SELECT completed_at FROM account_deletion_receipts").first<{completed_at:number}>())?.completed_at).toBe(now);
     expect(h.calls).toHaveBeenCalledTimes(1);
   });
+  it("hides funded offers from accounts with enough prepaid credit, including exact cheapest price",async()=>{
+    const h=harness(),a=await funded(h,100);await sponsorSeed();
+    for(const balance of [100,101,1000]) {
+      await env.DB.prepare("UPDATE balances SET micros=? WHERE account_id=?").bind(balance,a.account_id).run();
+      const response=await h.call("/v1/sponsorship/offers","GET",undefined,a.secret);
+      expect(response.status).toBe(200);expect(await response.json()).toEqual({offers:[]});
+      const me=await (await h.call("/v1/me","GET",undefined,a.secret)).json() as {sponsorship_available:boolean};
+      expect(me.sponsorship_available).toBe(false);
+    }
+    expect((await h.call("/v1/sponsorship/windows","POST",{offer_id:"o",minutes:30},a.secret)).status).toBe(409);
+    expect(await count("sponsor_windows")).toBe(0);expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("hides sponsorship and rejects direct acceptance in sandbox even when sandbox spending is enabled",async()=>{
+    const h=harness(),a=await h.account();await sponsorSeed();h.env.ENTITLEMENT_ENVIRONMENT="sandbox";
+    for(const enabled of ["false","true"]) {
+      h.env.ALLOW_SANDBOX_SPEND=enabled;
+      expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
+      expect((await h.call("/v1/sponsorship/windows","POST",{offer_id:"o",minutes:30},a.secret)).status).toBe(503);
+    }
+    expect(await count("sponsor_windows")).toBe(0);expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("hides funded inventory whenever managed rendering is unavailable",async()=>{
+    const h=harness(),a=await h.account();await sponsorSeed();
+    const unavailable:Partial<Env>[]=[{MANAGED_RENDER_ENABLED:"false"},{MANAGED_DAILY_LIMIT_MICROS:"0"},
+      {OPENAI_MANAGED_KEY:""},{MANAGED_PRICE_TABLE:""},{KEK_1:""}];
+    for(const change of unavailable) {
+      const prior={...h.env};Object.assign(h.env,change);
+      const response=await h.call("/v1/sponsorship/offers","GET",undefined,a.secret);
+      expect(response.status).toBe(200);expect(await response.json()).toEqual({offers:[]});
+      const me=await (await h.call("/v1/me","GET",undefined,a.secret)).json() as {sponsorship_available:boolean};
+      expect(me.sponsorship_available).toBe(false);Object.assign(h.env,prior);
+    }
+    expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("exposes approved funded inventory only below the cheapest render and never calls a provider",async()=>{
+    const h=harness(),a=await funded(h,99);await sponsorSeed();
+    for(const balance of [99,0]) {
+      await env.DB.prepare("UPDATE balances SET micros=? WHERE account_id=?").bind(balance,a.account_id).run();
+      const response=await h.call("/v1/sponsorship/offers","GET",undefined,a.secret);
+      expect(response.status).toBe(200);
+      const body=await response.json() as {offers:{offer_id:string;windows:{minutes:number;credit_cap_micros:number}[]}[]};
+      expect(body.offers.map(o=>o.offer_id)).toEqual(["o"]);
+      expect(body.offers[0]!.windows).toEqual([{minutes:30,credit_cap_micros:100}]);
+      const me=await (await h.call("/v1/me","GET",undefined,a.secret)).json() as {sponsorship_available:boolean};
+      expect(me.sponsorship_available).toBe(true);
+    }
+    expect(await count("sponsor_windows")).toBe(0);expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("hides offers without a render-sized funded window or remaining operator allowance",async()=>{
+    const h=harness(),a=await h.account();await sponsorSeed();
+    await env.DB.prepare("UPDATE sponsor_offer_windows SET credit_cap_micros=99").run();
+    expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
+    await env.DB.prepare("UPDATE sponsor_offer_windows SET credit_cap_micros=100").run();
+    await env.DB.prepare("UPDATE sponsors SET budget_remaining_micros=99").run();
+    expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
+    await env.DB.prepare("UPDATE sponsors SET budget_remaining_micros=1000").run();
+    await env.DB.prepare("INSERT INTO operator_spend VALUES(?,?,?)").bind(new Date(now).toISOString().slice(0,10),49999901,50000000).run();
+    expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
+    await env.DB.prepare("UPDATE operator_spend SET spent_micros=49999900").run();
+    expect((await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json() as {offers:unknown[]}).offers).toHaveLength(1);
+    expect(h.calls).not.toHaveBeenCalled();
+  });
   it("has no synthetic inventory by default and enforces one funded window concurrently",async()=>{
     const h=harness(),a=await h.account();expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
     await sponsorSeed();const responses=await Promise.all([1,2].map(()=>h.call("/v1/sponsorship/windows","POST",{offer_id:"o",minutes:30},a.secret)));
