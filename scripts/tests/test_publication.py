@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,30 @@ class PublicationChecks(unittest.TestCase):
         result = self.scan()
         self.assert_redacted_match(result)
         self.assertIn("[redacted]", result.stdout)
+
+    def test_contextual_private_path_rule_survives_other_redaction(self):
+        private = self.root / ".coordination"
+        private.mkdir()
+        (self.root / ".gitignore").write_text(".coordination/\n")
+        sensitive = "synthetic-private-suffix"
+        pattern = "(?<=" + re.escape(self.secret) + "-)" + sensitive
+        (private / "private-patterns.txt").write_text(pattern)
+        (self.root / (self.secret + "-" + sensitive)).write_text("ordinary")
+        result = self.scan()
+        self.assert_redacted_match(result)
+        self.assertIn("private-rule-1", result.stdout)
+        self.assertNotIn(sensitive, result.stdout + result.stderr)
+
+    def test_utf16_and_utf32_source_cannot_hide_staged_secrets(self):
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-be"):
+            with self.subTest(encoding=encoding):
+                path = self.root / "encoded.txt"
+                path.write_bytes(self.secret.encode(encoding))
+                self.git("add", "encoded.txt")
+                path.write_text("clean working copy")
+                result = self.scan()
+                self.assert_redacted_match(result)
+                self.assertIn("source=index", result.stdout)
 
     def test_private_rule_matches_without_echoing_the_value(self):
         private = self.root / ".coordination"

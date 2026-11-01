@@ -5,6 +5,7 @@ This aids source publication. Photos and compressed documents still require
 deliberate review; a clean scan cannot establish that arbitrary assets are safe.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -62,22 +63,36 @@ def load_rules(root):
 
 
 def safe_path(name, rules):
-    for _, pattern in rules:
-        name = pattern.sub("[redacted]", name)
+    # Evaluate every rule against the original name. Redacting one match must
+    # not remove context needed by a later private rule and expose that match.
+    if any(pattern.search(name) for _, pattern in rules):
+        digest = hashlib.sha256(os.fsencode(name)).hexdigest()[:12]
+        return json.dumps("[redacted]-" + digest)
     return json.dumps(name, ensure_ascii=True)
 
 
+def text_candidates(data):
+    yield data.decode("utf-8", errors="replace")
+    if b"\0" in data or data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        # UTF-16/32 source and metadata can contain ordinary ASCII credentials.
+        # Consider both byte orders without requiring a BOM. Zero stripping also
+        # detects ASCII secrets inside unaligned, zero-padded binary metadata.
+        for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+            yield data.decode(encoding, errors="replace")
+        yield data.replace(b"\0", b"").decode("utf-8", errors="replace")
+
+
 def inspect_bytes(data, name, source, rules):
-    text = data.decode("utf-8", errors="replace")
-    found = False
-    for rule, pattern in rules:
-        match = pattern.search(text)
-        if match:
-            line = text.count("\n", 0, match.start()) + 1
-            print("privacy-scan: match source={} file={} line={} rule={}".format(
-                source, safe_path(name, rules), line, rule))
-            found = True
-    return found
+    found = set()
+    for text in text_candidates(data):
+        for rule, pattern in rules:
+            match = pattern.search(text) if rule not in found else None
+            if match:
+                line = text.count("\n", 0, match.start()) + 1
+                print("privacy-scan: match source={} file={} line={} rule={}".format(
+                    source, safe_path(name, rules), line, rule))
+                found.add(rule)
+    return bool(found)
 
 
 def scan(root):
