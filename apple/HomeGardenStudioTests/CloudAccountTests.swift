@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import HomeGardenStudio
 
@@ -17,6 +18,71 @@ actor MockGatewayTransport: GatewayTransport {
         guard !replies.isEmpty else { throw GatewayError.transport }
         let reply = replies.removeFirst()
         return GatewayHTTPResponse(status: reply.status, url: reply.url ?? request.url!, data: reply.data)
+    }
+}
+
+// Models Security's primary-key uniqueness separately from generic-attribute matching.
+// Every operation invokes the actual KeychainAccountStore query construction, never the OS.
+@MainActor final class MockKeychainSecurityClient: KeychainSecurityClient {
+    var items: [String: [String: Any]] = [:]
+    var beforeAdd: (() -> Void)?
+    var beforeUpdate: (() -> Void)?
+    private(set) var updates: [[String: Any]] = []
+    private(set) var deletes: [[String: Any]] = []
+
+    private func primary(_ q: [String: Any]) -> String {
+        [kSecClass, kSecAttrService, kSecAttrAccount, kSecAttrAccessGroup].map { String(describing: q[$0 as String]!) }.joined(separator: "|")
+    }
+    private func matches(_ item: [String: Any], _ q: [String: Any]) -> Bool {
+        for key in [kSecClass, kSecAttrService, kSecAttrAccount, kSecAttrAccessGroup] {
+            if let expected = q[key as String], String(describing: item[key as String]!) != String(describing: expected) { return false }
+        }
+        guard let marker = q[kSecAttrGeneric as String] as? Data else { return true }
+        return item[kSecAttrGeneric as String] as? Data == marker
+    }
+    func copyMatching(_ query: [String: Any]) -> (OSStatus, CFTypeRef?) {
+        if let maximum = query[kSecMatchLimit as String] as? Int {
+            let matching = items.values.filter { matches($0, query) }.prefix(maximum).map { item in
+                var attributes = item
+                if query[kSecReturnData as String] as? Bool != true { attributes.removeValue(forKey: kSecValueData as String) }
+                return attributes
+            }
+            return matching.isEmpty ? (errSecItemNotFound, nil) : (errSecSuccess, matching as CFArray)
+        }
+        guard let item = items[primary(query)], matches(item, query) else { return (errSecItemNotFound, nil) }
+        return (errSecSuccess, item as CFDictionary)
+    }
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        let hook = beforeAdd; beforeAdd = nil; hook?()
+        let key = primary(attributes)
+        guard items[key] == nil else { return errSecDuplicateItem }
+        items[key] = attributes
+        return errSecSuccess
+    }
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        let hook = beforeUpdate; beforeUpdate = nil; hook?()
+        updates.append(query)
+        let key = primary(query)
+        guard var item = items[key], matches(item, query) else { return errSecItemNotFound }
+        attributes.forEach { item[$0.key] = $0.value }
+        items[key] = item
+        return errSecSuccess
+    }
+    func delete(_ query: [String: Any]) -> OSStatus {
+        deletes.append(query)
+        let key = primary(query)
+        guard let item = items[key], matches(item, query) else { return errSecItemNotFound }
+        items.removeValue(forKey: key)
+        return errSecSuccess
+    }
+}
+
+nonisolated struct InterleavingAccountTransport: GatewayTransport {
+    let response: Data
+    let beforeResponse: @MainActor @Sendable () throws -> Void
+    func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> GatewayHTTPResponse {
+        try await beforeResponse()
+        return GatewayHTTPResponse(status: 201, url: request.url!, data: response)
     }
 }
 
@@ -47,9 +113,9 @@ actor MockGatewayTransport: GatewayTransport {
         .init(status: status, data: try JSONSerialization.data(withJSONObject: value))
     }
     static func me(unlocked: Bool = false, balance: Int = 0, environment: String = "production",
-                   credits: [[String: Any]] = []) throws -> MockGatewayTransport.Reply {
+                   credits: [[String: Any]] = [], ios: Bool? = nil, macos: Bool? = nil) throws -> MockGatewayTransport.Reply {
         try json(["account_id": id.uuidString, "balances": ["production": balance, "sandbox": 0],
-                  "entitlements": ["ios": unlocked, "macos": unlocked, "bundle": false],
+                  "entitlements": ["ios": ios ?? unlocked, "macos": macos ?? unlocked, "bundle": false],
                   "entitlement_environment": environment, "monthly_cap_micros": NSNull(),
                   "month_spent_micros": 0, "managed_render": ["available": false, "reason": "disabled"],
                   "sponsorship_available": false, "keys": [], "credit_products": credits,
@@ -243,5 +309,233 @@ nonisolated final class CloudAccountTests: XCTestCase {
         try account.loadStoredAccount()
         await ServiceFixture.expect(.invalidResponse) { try await account.refresh() }
         XCTAssertNil(account.snapshot)
+    }
+
+    @MainActor func testKeychainCrossAccountCollisionPreservesIdentityAndSameAccountCacheUpdate() throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let original = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        try store.save(original, origin: ServiceFixture.origin)
+        let other = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "b", count: 43))
+        XCTAssertThrowsError(try store.save(other, origin: ServiceFixture.origin)) {
+            XCTAssertEqual($0 as? GatewayError, .credentialConflict)
+        }
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.accountID, original.accountID)
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.bearer, original.bearer)
+        var updated = original
+        updated.cachedEntitlements = .init(entitlements: .init(ios: true, macos: true, bundle: false), environment: .production)
+        try store.save(updated, origin: ServiceFixture.origin)
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.cachedEntitlements?.entitlements.macos, true)
+        XCTAssertTrue(security.updates.allSatisfy { $0[kSecAttrGeneric as String] is Data })
+    }
+
+    @MainActor func testKeychainInsertInterleavingCannotReplaceWinner() throws {
+        let security = MockKeychainSecurityClient()
+        let first = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let second = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let winner = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        let loser = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "b", count: 43))
+        XCTAssertNil(try first.load(origin: ServiceFixture.origin))
+        XCTAssertNil(try second.load(origin: ServiceFixture.origin))
+        security.beforeAdd = {
+            do { try first.save(winner, origin: ServiceFixture.origin) }
+            catch { XCTFail("The competing insertion must succeed") }
+        }
+        XCTAssertThrowsError(try second.save(loser, origin: ServiceFixture.origin)) {
+            XCTAssertEqual($0 as? GatewayError, .credentialConflict)
+        }
+        XCTAssertEqual(try first.load(origin: ServiceFixture.origin)?.accountID, winner.accountID)
+        XCTAssertEqual(security.items.count, 3) // Active winner plus both immutable recovery records.
+        XCTAssertEqual(Set(try first.recoverableAccounts(origin: ServiceFixture.origin).map(\.id)), [winner.accountID, loser.accountID])
+    }
+
+    @MainActor func testStaleKeychainWriteAndDeleteCannotAffectReplacementIdentity() throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let stale = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        let current = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "c", count: 43))
+        try store.save(stale, origin: ServiceFixture.origin)
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.accountID, stale.accountID)
+        let synchronized = MockKeychainSecurityClient()
+        let synchronizedStore = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: synchronized)
+        try synchronizedStore.save(current, origin: ServiceFixture.origin)
+        security.beforeUpdate = { security.items.merge(synchronized.items) { _, incoming in incoming } }
+        XCTAssertThrowsError(try store.save(stale, origin: ServiceFixture.origin))
+        try store.delete(origin: ServiceFixture.origin, accountID: stale.accountID)
+        XCTAssertThrowsError(try store.delete(origin: ServiceFixture.origin))
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.accountID, current.accountID)
+        XCTAssertTrue(security.deletes.allSatisfy { $0[kSecAttrGeneric as String] is Data })
+        try store.delete(origin: ServiceFixture.origin, accountID: current.accountID)
+        XCTAssertNil(try store.load(origin: ServiceFixture.origin))
+    }
+
+    @MainActor func testUnmarkedOrMismatchedKeychainDataIsPreservedWithoutMigration() throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let account = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        try store.save(account, origin: ServiceFixture.origin)
+        let key = try XCTUnwrap(security.items.first { $0.value[kSecAttrAccount as String] as? String == ServiceFixture.origin }?.key)
+        security.items[key]?[kSecAttrGeneric as String] = nil
+        let data = security.items[key]?[kSecValueData as String] as? Data
+        XCTAssertThrowsError(try store.load(origin: ServiceFixture.origin))
+        XCTAssertThrowsError(try store.save(account, origin: ServiceFixture.origin))
+        XCTAssertEqual(security.items[key]?[kSecValueData as String] as? Data, data)
+        security.items[key]?[kSecAttrGeneric as String] = Data(UUID().uuidString.utf8)
+        XCTAssertThrowsError(try store.load(origin: ServiceFixture.origin))
+        XCTAssertEqual(security.items[key]?[kSecValueData as String] as? Data, data)
+    }
+
+    @MainActor func testAccountCreationCollisionRecoversWinnerWithoutAnotherRequest() async throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let otherDevice = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let winner = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer,
+            cachedEntitlements: .init(entitlements: .init(ios: true, macos: true, bundle: true), environment: .production))
+        let candidateID = UUID()
+        let reply = try ServiceFixture.json(["account_id": candidateID.uuidString, "secret": "hgs_" + String(repeating: "b", count: 43)])
+        var requests = 0
+        let transport = InterleavingAccountTransport(response: reply.data) {
+            requests += 1
+            try otherDevice.save(winner, origin: ServiceFixture.origin)
+        }
+        let account = AccountService(client: try GatewayClient(baseURL: URL(string: ServiceFixture.origin), transport: transport), credentials: store)
+        await ServiceFixture.expect(.credentialConflict) { try await account.createAccount() }
+        XCTAssertEqual(account.state, .credentialConflict)
+        XCTAssertEqual(account.accountID, candidateID)
+        await ServiceFixture.expect(.credentialConflict) { try await account.refresh() }
+        await ServiceFixture.expect(.accountExists) { try await account.createAccount() }
+        try account.recoverStoredAccount()
+        XCTAssertEqual(account.accountID, winner.accountID)
+        XCTAssertTrue(account.isUnlocked)
+        XCTAssertEqual(account.state, .offline)
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.bearer, winner.bearer)
+        XCTAssertEqual(Set(try account.recoverableAccounts().map(\.id)), [winner.accountID, candidateID])
+        try account.recoverStoredAccount(accountID: candidateID)
+        XCTAssertEqual(account.accountID, candidateID)
+        XCTAssertFalse(account.isUnlocked)
+        XCTAssertEqual(requests, 1)
+    }
+
+    @MainActor func testUnsynchronizedDevicesRetainBothRecoveryRecordsAfterActiveWinnerReplacement() throws {
+        let deviceA = MockKeychainSecurityClient()
+        let deviceB = MockKeychainSecurityClient()
+        let storeA = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: deviceA)
+        let storeB = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: deviceB)
+        let accountA = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer,
+            cachedEntitlements: .init(entitlements: .init(ios: true, macos: true, bundle: true), environment: .production))
+        let accountB = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "b", count: 43))
+        try storeA.save(accountA, origin: ServiceFixture.origin)
+        try storeB.save(accountB, origin: ServiceFixture.origin)
+        // Model iCloud choosing B for the conflicting active item; UUID recovery primary keys differ.
+        deviceA.items.merge(deviceB.items) { _, incoming in incoming }
+        XCTAssertEqual(try storeA.load(origin: ServiceFixture.origin)?.accountID, accountB.accountID)
+        XCTAssertEqual(Set(try storeA.recoverableAccounts(origin: ServiceFixture.origin).map(\.id)), [accountA.accountID, accountB.accountID])
+        let selectedA = try storeA.selectAccount(origin: ServiceFixture.origin, accountID: accountA.accountID)
+        XCTAssertEqual(selectedA.bearer, accountA.bearer)
+        XCTAssertNil(selectedA.cachedEntitlements) // Immutable recovery cannot resurrect old cached access.
+        let selectedB = try storeA.selectAccount(origin: ServiceFixture.origin, accountID: accountB.accountID)
+        XCTAssertEqual(selectedB.bearer, accountB.bearer)
+        try storeA.delete(origin: ServiceFixture.origin, accountID: accountA.accountID)
+        XCTAssertEqual(try storeA.load(origin: ServiceFixture.origin)?.accountID, accountB.accountID)
+        XCTAssertEqual(try storeA.recoverableAccounts(origin: ServiceFixture.origin).map(\.id), [accountB.accountID])
+    }
+
+    @MainActor func testRecoverySelectionCompareAndSetPreservesConcurrentWinnerAndRecords() throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let a = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        let b = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "b", count: 43))
+        let c = StoredAccount(accountID: UUID(), bearer: "hgs_" + String(repeating: "c", count: 43))
+        try store.save(a, origin: ServiceFixture.origin)
+        XCTAssertThrowsError(try store.save(b, origin: ServiceFixture.origin))
+        XCTAssertThrowsError(try store.save(c, origin: ServiceFixture.origin))
+        security.beforeUpdate = {
+            do { _ = try store.selectAccount(origin: ServiceFixture.origin, accountID: c.accountID) }
+            catch { XCTFail("The competing selection must succeed") }
+        }
+        XCTAssertThrowsError(try store.selectAccount(origin: ServiceFixture.origin, accountID: b.accountID)) {
+            XCTAssertEqual($0 as? GatewayError, .credentialConflict)
+        }
+        XCTAssertEqual(try store.load(origin: ServiceFixture.origin)?.accountID, c.accountID)
+        XCTAssertEqual(try store.recoverableAccounts(origin: ServiceFixture.origin).count, 3)
+    }
+
+    @MainActor func testRecoveryRecordsAreImmutableOriginBoundAndBounded() throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        let original = StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer)
+        try store.save(original, origin: ServiceFixture.origin)
+        let changedBearer = StoredAccount(accountID: original.accountID, bearer: "hgs_" + String(repeating: "c", count: 43))
+        XCTAssertThrowsError(try store.save(changedBearer, origin: ServiceFixture.origin))
+        XCTAssertEqual(try store.selectAccount(origin: ServiceFixture.origin, accountID: original.accountID).bearer, original.bearer)
+        XCTAssertTrue(try store.recoverableAccounts(origin: "https://other.example.test").isEmpty)
+        for _ in 1..<KeychainAccountStore.maximumRecoveryAccounts {
+            let another = StoredAccount(accountID: UUID(), bearer: ServiceFixture.bearer)
+            XCTAssertThrowsError(try store.save(another, origin: ServiceFixture.origin))
+        }
+        let overflow = StoredAccount(accountID: UUID(), bearer: ServiceFixture.bearer)
+        XCTAssertThrowsError(try store.save(overflow, origin: ServiceFixture.origin))
+        XCTAssertEqual(try store.recoverableAccounts(origin: ServiceFixture.origin).count, 32)
+        XCTAssertThrowsError(try store.selectAccount(origin: ServiceFixture.origin, accountID: overflow.accountID))
+    }
+
+    @MainActor func testMissingActivePointerRequiresRecoveryInsteadOfCreatingAnotherAccount() async throws {
+        let security = MockKeychainSecurityClient()
+        let store = try KeychainAccountStore(accessGroup: "SYNTHETIC.shared", security: security)
+        try store.save(StoredAccount(accountID: ServiceFixture.id, bearer: ServiceFixture.bearer), origin: ServiceFixture.origin)
+        let key = try XCTUnwrap(security.items.first { $0.value[kSecAttrAccount as String] as? String == ServiceFixture.origin }?.key)
+        security.items.removeValue(forKey: key)
+        let transport = MockGatewayTransport()
+        let account = AccountService(client: try GatewayClient(baseURL: URL(string: ServiceFixture.origin), transport: transport), credentials: store)
+        await ServiceFixture.expect(.credentialConflict) { try await account.createAccount() }
+        XCTAssertEqual(account.state, .credentialConflict)
+        try account.recoverStoredAccount(accountID: ServiceFixture.id)
+        XCTAssertEqual(account.accountID, ServiceFixture.id)
+        let requests = await transport.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor func testFailedRecoverySelectionKeepsPriorIdentityAndBlocksCloud() async throws {
+        let transport = MockGatewayTransport()
+        let account = try ServiceFixture.account(transport, cached: true)
+        XCTAssertThrowsError(try account.recoverStoredAccount(accountID: UUID()))
+        XCTAssertEqual(account.state, .credentialConflict)
+        XCTAssertEqual(account.accountID, ServiceFixture.id)
+        XCTAssertTrue(account.isUnlocked)
+        await ServiceFixture.expect(.credentialConflict) { try await account.refresh() }
+        let requests = await transport.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor func testDeletionCleanupFailureRetainsIdentityAndRetriesBeforeKeychainRemoval() async throws {
+        let transport = MockGatewayTransport([.init(status: 204, data: Data())])
+        let store = MemoryAccountStore()
+        let account = try ServiceFixture.account(transport, store: store, cached: true)
+        var attempts = 0
+        await ServiceFixture.expect(.credentialsUnavailable) {
+            try await account.deleteAccount(confirmed: true) { origin, id in
+                XCTAssertEqual(origin, ServiceFixture.origin)
+                XCTAssertEqual(id, ServiceFixture.id)
+                XCTAssertNotNil(store.values[origin])
+                attempts += 1
+                throw GatewayError.credentialsUnavailable
+            }
+        }
+        XCTAssertEqual(account.state, .deletionPending)
+        XCTAssertEqual(account.accountID, ServiceFixture.id)
+        XCTAssertNotNil(store.values[ServiceFixture.origin])
+        XCTAssertThrowsError(try account.recoverStoredAccount(accountID: ServiceFixture.id))
+        try await account.deleteAccount(confirmed: true) { origin, id in
+            XCTAssertEqual(id, ServiceFixture.id)
+            XCTAssertNotNil(store.values[origin])
+            attempts += 1
+        }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNil(account.accountID)
+        XCTAssertNil(store.values[ServiceFixture.origin])
+        XCTAssertEqual(account.state, .signedOut)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
     }
 }

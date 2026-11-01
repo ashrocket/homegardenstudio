@@ -3,7 +3,7 @@ import Foundation
 nonisolated enum GatewayError: Error, LocalizedError, Equatable {
     case unavailable, invalidConfiguration, invalidInput, invalidResponse, responseTooLarge
     case transport, unauthorized, server(Int), credentialsUnavailable, corruptCredentials
-    case accountExists, accountRequired, busy, confirmationRequired, credentialSaveRequired
+    case accountExists, accountRequired, busy, confirmationRequired, credentialSaveRequired, credentialConflict
     case productUnavailable, verificationFailed, accountMismatch, prerequisiteRequired
 
     var errorDescription: String? {
@@ -23,6 +23,7 @@ nonisolated enum GatewayError: Error, LocalizedError, Equatable {
         case .busy: "Another account operation is in progress."
         case .confirmationRequired: "Confirm the selected provider before sending a key."
         case .credentialSaveRequired: "The account was created, but Keychain could not save it. Retry saving before continuing."
+        case .credentialConflict: "The saved account identity could not be matched safely. Existing credentials have been preserved. Choose a saved account to recover access."
         case .productUnavailable: "This product is not available from the App Store."
         case .verificationFailed: "The purchase could not be verified. It has not been finished."
         case .accountMismatch: "This purchase belongs to a different account."

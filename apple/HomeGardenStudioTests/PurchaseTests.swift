@@ -124,7 +124,7 @@ nonisolated final class PurchaseTests: XCTestCase {
         let purchases = PurchaseService(account: account, store: store)
         try await purchases.loadProducts()
         XCTAssertEqual(purchases.products[0].displayPrice, "€2,29")
-        XCTAssertEqual(store.requestedIDs, PurchaseCatalog.platformProducts.union([credit]))
+        XCTAssertEqual(store.requestedIDs, PurchaseCatalog.platformProducts.subtracting([PurchaseCatalog.iosUpgrade, PurchaseCatalog.macUpgrade]).union([credit]))
     }
 
     @MainActor func testActualPurchasePassesExistingAccountTokenAndWaitsForVerification() async throws {
@@ -155,5 +155,43 @@ nonisolated final class PurchaseTests: XCTestCase {
         try await purchases.loadProducts()
         await ServiceFixture.expect(.prerequisiteRequired) { try await purchases.purchase(productID: upgrade) }
         XCTAssertTrue(store.purchases.isEmpty)
+    }
+
+    @MainActor func testCrossPlatformUpgradeEligibilityUsesOwnedProductNotCurrentDevice() {
+        let macProducts: Set<String> = [PurchaseCatalog.mac, PurchaseCatalog.bundle, PurchaseCatalog.macUpgrade]
+        let iosProducts: Set<String> = [PurchaseCatalog.ios, PurchaseCatalog.bundle, PurchaseCatalog.iosUpgrade]
+        let iosOwner = PurchaseCatalog.eligibleProducts(platformProducts: macProducts,
+            entitlements: .init(ios: true, macos: false, bundle: false))
+        XCTAssertTrue(iosOwner.contains(PurchaseCatalog.iosUpgrade)) // Approved iOS-to-bundle product, StoreKit supplies its price.
+        XCTAssertFalse(iosOwner.contains(PurchaseCatalog.macUpgrade))
+        let macOwner = PurchaseCatalog.eligibleProducts(platformProducts: iosProducts,
+            entitlements: .init(ios: false, macos: true, bundle: false))
+        XCTAssertTrue(macOwner.contains(PurchaseCatalog.macUpgrade))
+        XCTAssertFalse(macOwner.contains(PurchaseCatalog.iosUpgrade))
+        let bundleOwner = PurchaseCatalog.eligibleProducts(platformProducts: macProducts,
+            entitlements: .init(ios: true, macos: true, bundle: true))
+        XCTAssertFalse(bundleOwner.contains(PurchaseCatalog.iosUpgrade))
+        XCTAssertFalse(bundleOwner.contains(PurchaseCatalog.macUpgrade))
+    }
+
+    @MainActor func testCrossPlatformOwnerLoadsOwnedPlatformUpgradeWithStorePrice() async throws {
+        #if os(macOS)
+        let upgrade = PurchaseCatalog.iosUpgrade
+        let reply = try ServiceFixture.me(ios: true, macos: false)
+        let storePrice = "$3.00"
+        #else
+        let upgrade = PurchaseCatalog.macUpgrade
+        let reply = try ServiceFixture.me(ios: false, macos: true)
+        let storePrice = "$0.99"
+        #endif
+        let transport = MockGatewayTransport([reply])
+        let account = try ServiceFixture.account(transport)
+        let store = MockStorePurchaseClient()
+        store.offered = [.init(id: upgrade, name: "Owned platform upgrade", detail: "", displayPrice: storePrice)]
+        let purchases = PurchaseService(account: account, store: store)
+        try await purchases.loadProducts()
+        XCTAssertTrue(store.requestedIDs.contains(upgrade))
+        XCTAssertEqual(purchases.products.first?.id, upgrade)
+        XCTAssertEqual(purchases.products.first?.displayPrice, storePrice)
     }
 }

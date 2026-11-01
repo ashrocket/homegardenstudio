@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 nonisolated enum AccountState: Equatable, Sendable {
-    case unavailable, notLoaded, signedOut, ready, offline, recoveryRequired, credentialSaveRequired, deletionPending
+    case unavailable, notLoaded, signedOut, ready, offline, recoveryRequired, credentialSaveRequired, credentialConflict, deletionPending
 }
 
 @Observable @MainActor final class AccountService: Entitlements {
@@ -36,13 +36,14 @@ nonisolated enum AccountState: Equatable, Sendable {
         guard !isBusy else { throw GatewayError.busy }
         guard let client else { throw GatewayError.unavailable }
         guard state != .credentialSaveRequired, !deletedRemotely else { throw GatewayError.credentialSaveRequired }
+        guard state != .credentialConflict else { throw GatewayError.credentialConflict }
         do {
             let saved = try credentials.load(origin: client.origin)
             try saved?.validate()
             stored = saved
             snapshot = nil
             state = saved == nil ? .signedOut : .offline
-        } catch { state = .recoveryRequired; throw error }
+        } catch { state = error as? GatewayError == .credentialConflict ? .credentialConflict : .recoveryRequired; throw error }
     }
 
     // This method is called only by an explicit Create Account action, never by restore or refresh.
@@ -50,6 +51,7 @@ nonisolated enum AccountState: Equatable, Sendable {
         guard let client else { throw GatewayError.unavailable }
         try begin(); defer { isBusy = false }
         guard stored == nil else { throw GatewayError.accountExists }
+        guard state != .credentialConflict else { throw GatewayError.credentialConflict }
         guard state != .recoveryRequired, state != .deletionPending else { throw GatewayError.credentialsUnavailable }
         do {
             if let existing = try credentials.load(origin: client.origin) {
@@ -57,23 +59,60 @@ nonisolated enum AccountState: Equatable, Sendable {
                 stored = existing; state = .offline
                 throw GatewayError.accountExists
             }
+            guard try credentials.recoverableAccounts(origin: client.origin).isEmpty else {
+                throw GatewayError.credentialConflict
+            }
         } catch GatewayError.accountExists { throw GatewayError.accountExists }
-        catch { state = .recoveryRequired; throw error }
+        catch { state = error as? GatewayError == .credentialConflict ? .credentialConflict : .recoveryRequired; throw error }
         nonisolated struct Created: Decodable, Sendable { let accountId: UUID; let secret: String }
         let result: Created = try await client.request("POST", path: "/v1/accounts")
         let account = StoredAccount(accountID: result.accountId, bearer: result.secret)
         try account.validate()
         stored = account
         do { try credentials.save(account, origin: client.origin); state = .offline }
-        catch { state = .credentialSaveRequired; throw GatewayError.credentialSaveRequired }
+        catch { throw saveFailure(error) }
         try await refreshInside(client: client, account: account)
     }
 
     func retryCredentialSave() throws {
         guard !isBusy else { throw GatewayError.busy }
         guard let client, let stored, state == .credentialSaveRequired else { throw GatewayError.accountRequired }
-        try credentials.save(stored, origin: client.origin)
+        do { try credentials.save(stored, origin: client.origin) }
+        catch { throw saveFailure(error) }
         state = snapshot == nil ? .offline : .ready
+    }
+
+    // Deliberate recovery after a collision. Read only: never create, overwrite, transfer or delete.
+    func recoverStoredAccount() throws {
+        guard !isBusy else { throw GatewayError.busy }
+        guard let client, state == .credentialConflict else { throw GatewayError.accountRequired }
+        guard let preserved = try credentials.load(origin: client.origin) else { throw GatewayError.accountRequired }
+        try preserved.validate()
+        stored = preserved
+        snapshot = nil
+        deletedRemotely = false
+        state = .offline
+    }
+
+    func recoverableAccounts() throws -> [RecoverableAccount] {
+        guard !isBusy else { throw GatewayError.busy }
+        guard let client else { throw GatewayError.unavailable }
+        return try credentials.recoverableAccounts(origin: client.origin)
+    }
+
+    // Explicit account selection changes the active identity, never purchase ownership or balances.
+    func recoverStoredAccount(accountID: UUID) throws {
+        guard !isBusy else { throw GatewayError.busy }
+        guard !deletedRemotely, state != .deletionPending else { throw GatewayError.credentialsUnavailable }
+        guard let client else { throw GatewayError.unavailable }
+        let selected: StoredAccount
+        do { selected = try credentials.selectAccount(origin: client.origin, accountID: accountID) }
+        catch { state = .credentialConflict; throw error }
+        try selected.validate()
+        stored = selected
+        snapshot = nil
+        deletedRemotely = false
+        state = .offline
     }
 
     func refresh() async throws {
@@ -94,10 +133,12 @@ nonisolated enum AccountState: Equatable, Sendable {
             // Apply revocations in memory even if Keychain is temporarily unavailable.
             stored = updated; snapshot = result
             do { try credentials.save(updated, origin: client.origin) }
-            catch { state = .credentialSaveRequired; throw GatewayError.credentialSaveRequired }
+            catch { throw saveFailure(error) }
             state = .ready
         } catch {
-            if state != .credentialSaveRequired { state = error as? GatewayError == .unauthorized ? .recoveryRequired : .offline }
+            if state != .credentialSaveRequired && state != .credentialConflict {
+                state = error as? GatewayError == .unauthorized ? .recoveryRequired : .offline
+            }
             throw error
         }
     }
@@ -162,8 +203,10 @@ nonisolated enum AccountState: Equatable, Sendable {
     }
 
     // Account deletion does not cancel or refund Apple purchases.
-    func deleteAccount(confirmed: Bool) async throws {
+    func deleteAccount(confirmed: Bool,
+                       localCleanup: @MainActor @Sendable (_ origin: String, _ accountID: UUID) async throws -> Void = { _, _ in }) async throws {
         guard confirmed else { throw GatewayError.confirmationRequired }
+        guard state != .credentialConflict else { throw GatewayError.credentialConflict }
         guard let client, let stored else { throw GatewayError.accountRequired }
         try begin(); defer { isBusy = false }
         if !deletedRemotely {
@@ -173,7 +216,14 @@ nonisolated enum AccountState: Equatable, Sendable {
         snapshot = nil
         self.stored?.cachedEntitlements = nil
         state = .deletionPending
-        try credentials.delete(origin: client.origin)
+        // Keep identity durable until account-specific recovery data is fenced/removed durably.
+        // A failing hook leaves this state retryable and never reports deletion complete.
+        try await localCleanup(client.origin, stored.accountID)
+        do { try credentials.delete(origin: client.origin, accountID: stored.accountID) }
+        catch {
+            if error as? GatewayError == .credentialConflict { state = .credentialConflict }
+            throw error
+        }
         self.stored = nil
         deletedRemotely = false
         state = .signedOut
@@ -228,12 +278,22 @@ nonisolated enum AccountState: Equatable, Sendable {
         guard let client else { throw GatewayError.unavailable }
         guard let stored else { throw GatewayError.accountRequired }
         guard state != .credentialSaveRequired else { throw GatewayError.credentialSaveRequired }
+        guard state != .credentialConflict else { throw GatewayError.credentialConflict }
         guard state != .recoveryRequired, !deletedRemotely else { throw GatewayError.credentialsUnavailable }
         return (client, stored)
     }
     private func begin() throws {
         guard !isBusy else { throw GatewayError.busy }
         isBusy = true
+    }
+
+    private func saveFailure(_ error: any Error) -> GatewayError {
+        if error as? GatewayError == .credentialConflict {
+            state = .credentialConflict
+            return .credentialConflict
+        }
+        state = .credentialSaveRequired
+        return .credentialSaveRequired
     }
 }
 

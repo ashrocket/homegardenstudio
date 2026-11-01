@@ -60,10 +60,10 @@ nonisolated enum PurchaseState: Equatable, Sendable {
         do {
             try await account.refresh()
             guard let accountID = account.accountID else { throw GatewayError.accountRequired }
+            try requirePrerequisite(productID)
             guard allowedProducts().contains(productID), products.contains(where: { $0.id == productID }) else {
                 throw GatewayError.productUnavailable
             }
-            try requirePrerequisite(productID)
             state = .purchasing
             switch try await store.purchase(productID: productID, accountToken: accountID) {
             case .success(let result): try await accept(result)
@@ -121,7 +121,9 @@ nonisolated enum PurchaseState: Equatable, Sendable {
     }
 
     private func allowedProducts() -> Set<String> {
-        PurchaseCatalog.platformProducts.union(account.snapshot?.creditProducts.map(\.productId) ?? [])
+        guard let snapshot = account.snapshot else { return [] }
+        return PurchaseCatalog.eligibleProducts(platformProducts: PurchaseCatalog.platformProducts,
+            entitlements: snapshot.entitlements).union(snapshot.creditProducts.map(\.productId))
     }
     private func requirePrerequisite(_ productID: String) throws {
         guard let entitlement = account.snapshot?.entitlements else { throw GatewayError.accountRequired }

@@ -16,6 +16,14 @@ nonisolated enum PurchaseCatalog {
         [ios, bundle, iosUpgrade]
         #endif
     }
+    static func eligibleProducts(platformProducts: Set<String>, entitlements: AccountEntitlements) -> Set<String> {
+        var result = platformProducts.subtracting([iosUpgrade, macUpgrade])
+        if !entitlements.bundle {
+            if entitlements.ios { result.insert(iosUpgrade) }
+            if entitlements.macos { result.insert(macUpgrade) }
+        }
+        return result
+    }
 }
 
 nonisolated struct PurchaseProduct: Sendable, Identifiable, Equatable {
