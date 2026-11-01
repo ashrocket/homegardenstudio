@@ -1,0 +1,26 @@
+{
+  "name": "homegardenstudio-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HomeGardenStudio Cloudflare gateway Worker: accounts, key custody, StoreKit credit ledger, render and assist proxy, sponsorship.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "types": "wrangler types worker-bindings.d.ts --env-interface WranglerBindings --include-runtime=false --strict-vars=false",
+    "types:check": "wrangler types worker-bindings.d.ts --env-interface WranglerBindings --include-runtime=false --strict-vars=false --check",
+    "package:check": "wrangler deploy --dry-run --outdir .wrangler/dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@peculiar/x509": "^3.1.0",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.0",
+    "wrangler": "4.85.0"
+  }
+}

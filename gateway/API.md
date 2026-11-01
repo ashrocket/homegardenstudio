@@ -1,118 +1,112 @@
-# HomeGardenStudio gateway API (v1)
+# HomeGardenStudio gateway API v1
 
-A Cloudflare Worker (TypeScript) with one D1 database. It handles accounts, encrypted custody of customer provider keys, verified App Store purchases, the credit ledger, cloud render and assist proxying, and sponsorship inventory. It is isolated from every other Worker: its own name `homegardenstudio-gateway` and its own D1 `homegardenstudio`.
+The isolated Cloudflare Worker uses D1 for account metadata, encrypted provider custody, signed purchase state, credit, sponsorship and encrypted render recovery. All monetary values are safe integer micro-USD (1 USD = 1,000,000). No resource or product is created by this source. Managed rendering is disabled by default.
 
-All money is integer **micro-USD** (`1 USD = 1_000_000`). All responses are JSON. Errors are `{"error":{"code":"…","message":"…"}}` with a fitting HTTP status. Request bodies are capped at 12 MB (render) or 64 KB (everything else).
+Errors are JSON: `{"error":{"code":"…","message":"…"}}`. Successful responses use `Cache-Control: no-store`. JSON bodies are limited to 64 KiB, or 12 MiB for render quotes/jobs, including chunked bodies. Responses and logs never disclose stored provider secrets. All account routes use `Authorization: Bearer hgs_…`.
 
-## Accounts and authentication
+## Accounts
 
-The design is a privacy-first anonymous account: no email and no Apple ID. The app creates an account on first need (a purchase, cloud key or render), keeps the secret in the iCloud-synchronised keychain, and sends `Authorization: Bearer <secret>`.
+- `POST /v1/accounts` → `201 {"account_id":"UUID","secret":"hgs_…"}`. The secret is generated with 32 random bytes; only its SHA-256 digest is stored. Creation is limited to five per trusted Cloudflare client IP per hour. A direct-origin deployment must not trust caller-supplied `cf-connecting-ip`.
+- `GET /v1/me` → account ID, `balances:{production,sandbox}`, `entitlements:{ios,macos,bundle}`, `entitlement_environment`, `monthly_cap_micros`, `month_spent_micros`, `managed_render:{available,reason}`, `sponsorship_available`, `keys`, `credit_products:[{product_id,credit_micros}]`, `budget_adds_credit:false`.
+- `PUT /v1/me/budget {"monthly_cap_micros":null|integer}` accepts 0–500,000,000. This is a hard UTC calendar-month spending ceiling against prepaid balance. Raising a ceiling never adds money. Lowering it below already-spent funds prevents further spending. Refunds release spending in the original job's month, including after a month boundary. Sponsor and BYOK spending do not consume this customer ceiling.
+- `POST /v1/me/rotate-secret` replaces the bearer and returns `{account_id,secret}`. Save the new secret in synchronized Keychain before removing the old local value; other devices need the replacement. Lost-secret recovery is not available through transaction IDs, receipts, or Apple account guesses. Preserve the original account's Keychain entry for purchase restores.
+- `DELETE /v1/me` revokes the secret, deletes keys and retained result parts, invalidates outstanding quotes, refunds unfinished/unacknowledged work and reclaims unused sponsor credit. Minimal financial rows and signed-state evidence remain for refund handling. Account deletion does not cancel Apple purchases. Completion and account writes are guarded against concurrent deletion.
 
-- `POST /v1/accounts`: returns `201 {"account_id":"<uuid v4>","secret":"hgs_<43 base64url chars>"}`. The server stores only `SHA-256(secret)`. It is rate-limited to 5 per IP per hour (`429 RATE_LIMITED`).
-- `GET /v1/me`: returns `{"account_id","balances":{"production":micros,"sandbox":micros},"entitlements":{"ios":bool,"macos":bool,"bundle":bool},"monthly_cap_micros":int|null,"month_spent_micros":int,"managed_render":{"available":bool,"reason":string|null},"sponsorship_available":bool,"keys":[KeyMeta]}`.
-- `PUT /v1/me/budget {"monthly_cap_micros": int|null}`: a hard monthly cap on debits from the balance. Null removes it. `0..=500_000_000`.
-- `DELETE /v1/me`: deletes provider keys, sessions and sponsor windows and marks the account deleted. Financial rows (transactions, ledger) are kept without personal data for refund handling. Afterwards the secret no longer authenticates.
+`ENTITLEMENT_ENVIRONMENT` is a server deployment setting, default `production`. A separate QA deployment may use `sandbox`; callers cannot select it. Production and sandbox balances, grants and entitlement derivation remain separate. Xcode-local receipts are rejected. Sandbox spend additionally requires `ALLOW_SANDBOX_SPEND=true`.
 
-## Provider key custody
+## Provider custody and discovery
 
-Providers are `openai`, `anthropic` and `custom`. `KeyMeta` is `{"provider","label","fingerprint","endpoint_host":string|null,"created_at","updated_at"}`. `fingerprint` is the first 12 hex characters of `SHA-256(secret)`. **There is no endpoint that returns plaintext.**
+Providers: `openai`, `anthropic`, `custom`.
 
-- `PUT /v1/keys/:provider`. Body: `{"secret":string,"confirmed_provider":string,"label"?:string,"endpoint"?:string}`.
-  - `confirmed_provider` must equal `:provider`; otherwise `400 PROVIDER_NOT_CONFIRMED`.
-  - Format checks:
-    - `anthropic` must start with `sk-ant-`.
-    - `openai` must start with `sk-` and must not start with `sk-ant-`.
-    - A mismatch gives `400 KEY_PROVIDER_MISMATCH`, with a message naming the provider the key looks like.
-    - The secret must be 20–400 printable ASCII characters.
-  - `custom` requires `endpoint`, validated by the SSRF guard below; the others reject `endpoint`.
-  - The key is stored encrypted (see Encryption). Returns `200 KeyMeta`.
-- `DELETE /v1/keys/:provider`: returns `204` (idempotent).
-- `POST /v1/keys/:provider/test`: decrypts in memory and makes one cheap authenticated call. For OpenAI that is `GET https://api.openai.com/v1/models`. For Anthropic it is `models.list` through `@anthropic-ai/sdk`. For a custom endpoint it is `GET <endpoint>/models`. Every call uses `redirect: "manual"` and a 10 s timeout. Returns `{"ok":bool,"status":int,"capabilities":{"image_generation":bool,"text":bool},"message":string}`. Anthropic is always `image_generation:false`. OpenAI is `image_generation:true` only when the model list includes a configured image model id. A custom endpoint is `text:true` and `image_generation` only when its `/models` lists a configured image model id. Upstream error bodies are never echoed raw; secrets are redacted in all logs.
+- `PUT /v1/keys/:provider {"secret":"…","confirmed_provider":"openai|anthropic|custom","label":"optional","endpoint":"custom only"}` requires explicit provider confirmation. OpenAI credentials must start `sk-` and exclude `sk-ant-`; Anthropic requires `sk-ant-`. Secrets are 20–400 printable non-space ASCII characters. Custom endpoints are chosen explicitly.
+- Response metadata: `{provider,label,fingerprint,endpoint_host,created_at,updated_at}`; timestamps here are ISO 8601. No plaintext read-back route exists.
+- `DELETE /v1/keys/:provider` returns 204 and is idempotent.
+- `POST /v1/keys/:provider/test` makes model discovery only, never paid generation. Response: `{ok,status,capabilities:{image_generation:false,text:false},discovery:"available"|"invalid_response",generation_verified:false,advertised_image_models?:[],message}`. A valid model list does not establish generation permission, quota, billing capacity, or actual availability. HTML/malformed JSON never counts as success. Anthropic is text-only.
+- `POST /v1/admin/rotate-keys` requires the optional `ADMIN_TOKEN`; otherwise the route is absent. The result counts actual changed rows, and compare-and-set preserves concurrent updates/deletion.
 
-### Encryption
+Keys use AES-256-GCM, fresh 12-byte IVs and per-account HKDF-SHA256 derivation from the server-held 32-byte `KEK_<n>` secret. AAD includes account, record purpose/provider and KEK version. Result chunks use distinct `result:<job>:<part>` purposes. Ciphertext cannot be moved between tenants or purposes. Keep older KEKs until all live keys and retained results using them have expired or been migrated. Rotation changes key ciphertext and invalidates outstanding quotes conservatively.
 
-- `KEK_<n>` Worker secrets (base64, 32 random bytes). `KEK_CURRENT_VERSION` (var) selects the version for new writes.
-- Per record: AES-256-GCM. The key is `HKDF-SHA256(ikm=KEK_n, salt=account_id bytes, info="hgs-provider-key-v1")` and the IV is 12 random bytes. AAD is the UTF-8 of `"hgs1|" + account_id + "|" + provider + "|" + kek_version`. A ciphertext copied to another account or provider fails to decrypt.
-- Rotation: `POST /v1/admin/rotate-keys` with `Authorization: Bearer <ADMIN_TOKEN secret>`. It re-encrypts rows whose `kek_version` is below current, in batches of 100. Without `ADMIN_TOKEN` configured it returns 404.
-- Logs: never log request bodies, secrets, `Authorization` or upstream bodies. A `redact()` helper masks `sk-…`, `hgs_…` and bearer tokens in any logged string.
+All outbound calls pin the selected host, refuse redirects and use deadlines. Custom URLs must be HTTPS/default port, without userinfo, query or fragment; IP literals, ambiguous numeric addresses, provider lookalikes, local/internal suffixes and single-label names are rejected. **Public DNS destination enforcement relies on Cloudflare global fetch with `global_fetch_strictly_public`.** See the [runtime flag documentation](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public). No VPC, service binding, privileged origin fetch or user-supplied fetch adapter may replace this path. Local injected test adapters do not prove DNS/rebinding or same-zone protection. Those require authorized runtime verification before production.
 
-### SSRF guard (custom endpoints)
+Provider response JSON is streamed into bounded buffers: 256 KiB for discovery/text; 8 MiB base64 plus small JSON overhead for images. Slow, chunked, dishonest-size and malformed bodies fail. Anthropic SDK responses pass through the same bounded reader, with SDK retries disabled. OpenAI-compatible image and text calls do not retry automatically.
 
-`validateCustomEndpoint(url)` accepts only:
-- `https:` URLs on the default port 443, with no userinfo, no fragment and no query string;
-- hostnames that aren't IP literals (v4, v6, or decimal/octal/hex forms);
-- names that aren't `localhost`, don't end in `.localhost`, `.local`, `.internal`, `.lan`, `.home`, `.corp` or `.arpa`, and contain at least one dot;
-- hosts that aren't an exact or suffix match of the configured provider hosts (`api.openai.com`, `api.anthropic.com`). Those must use their own provider types.
+## StoreKit purchases and credit
 
-Every outbound fetch uses `redirect: "manual"`; any 3xx is treated as a failure (`UPSTREAM_REDIRECT`). Credentials are sent only to `api.openai.com` (openai), `api.anthropic.com` (anthropic) or the exact stored custom endpoint. The host is never guessed or taken from a response.
+Full product IDs use prefix `com.ashleyraiteri.homegardenstudio.`:
 
-## App Store purchases
+| Suffix | Approved US price | Credit micros | Access |
+| --- | --- | --- | --- |
+| `unlock.ios` | $1.99 | 2,000,000 | iOS/iPadOS |
+| `unlock.mac` | $3.99 | 2,000,000 | macOS |
+| `unlock.bundle` | $4.99 | 5,000,000 | Both |
+| `upgrade.ios_to_bundle` | $3.00 | 5,000,000 | Both; requires active iOS unlock |
+| `upgrade.mac_to_bundle` | $0.99 | 5,000,000 | Both; requires active macOS unlock |
 
-Product IDs (prefix `com.ashleyraiteri.homegardenstudio.`):
+`ENABLE_MAC_UPGRADE=true` is the approved default. Prices are configured in App Store Connect and displayed from StoreKit, never charged by this gateway.
 
-| product | type | price | credit | grants |
-|---|---|---|---|---|
-| `unlock.ios` | non-consumable | $1.99 | 2_000_000 | `ios` |
-| `unlock.mac` | non-consumable | $3.99 | 2_000_000 | `macos` |
-| `unlock.bundle` | non-consumable | $4.99 | 5_000_000 | `ios`,`macos`,`bundle` |
-| `upgrade.ios_to_bundle` | non-consumable | $3.00 | 5_000_000 | `ios`,`macos`,`bundle`; **requires** a verified, unrevoked `unlock.ios` on the same account |
-| `upgrade.mac_to_bundle` | non-consumable | $0.99 | 5_000_000 | same; requires a verified, unrevoked `unlock.mac` on the same account. Owner-confirmed 2026-11-01. `ENABLE_MAC_UPGRADE` (default `"true"`) can switch it off. |
+Additional consumable credit packs are disabled until explicitly configured in `CREDIT_PRODUCTS`, a JSON object mapping full `…credit.<owner-chosen-name>` product IDs to positive integer credit micros. No pack IDs, prices or recurring tiers are invented or enabled in source. The app must fetch matching StoreKit products and obtain a verified transaction; changing a usage ceiling cannot purchase credit.
 
-Non-consumables sync across platforms under universal purchase. That's why `unlock.ios` grants only the `ios` entitlement; the app honours it only on iOS and iPadOS.
+- `POST /v1/storekit/transactions {"signed_transaction":"JWS"}` verifies ES256, Apple certificate chain and marker extensions, bundle, environment and configured product. New purchases **must** contain the authenticated account UUID in signed `appAccountToken`; tokenless and mismatched claims are rejected. Original transaction binding is unique in storage. No automatic account transfer exists.
+- Transactions are stored as durable pending records. An atomic eligibility check, ledger grant and balance update releases them once. A crash before release is repaired by replay, account refresh or scheduled maintenance. A prerequisite must be granted, unrevoked and in the **same StoreKit environment**. Pending upgrades confer neither access nor credit. Prerequisite revocation suspends dependent bundle entitlement; it does not reverse the separately paid upgrade's credit. Restoring the prerequisite restores access without another upgrade grant.
+- Response: `{transaction_id,product_id,environment,status,credit_granted_micros,balances,entitlements}`. `credit_granted_micros` is the transaction's lifetime grant, not a newly credited delta. Replay can return `granted` with the same lifetime amount; it never grants again.
+- `POST /v1/storekit/notifications {"signedPayload":"JWS"}` verifies outer and inner JWS and stores notification identity. `REFUND`, `REVOKE`, `REFUND_REVERSED` reconcile signed transaction state. Unknown notification types acknowledge with `handled:false`.
+- Signed transaction `signedDate` orders state. Old evidence cannot override newer state. An equally signed contradictory state or notification/transaction disagreement returns 409 and requires fresh authoritative transaction evidence; arrival order is not treated as truth. Unknown-transaction revocation evidence survives until registration. Identity changes are rejected. Refunds claw back at most the currently available balance; the shortfall is recorded and reserves an equal amount from future spendable balance. A late render refund therefore cannot make revoked purchase credit spendable again. A reversal restores exactly that clawback, and a later valid revocation can claw it back again. Each accepted transition and its financial effect commit atomically.
 
-- `POST /v1/storekit/transactions {"signed_transaction": "<JWS>"}`:
-  1. Verify the JWS. The algorithm must be ES256. Check the `x5c` chain: the leaf must be signed by the intermediate, the intermediate by a trusted root, every certificate must be within its validity at `signedDate`, the leaf must carry OID `1.2.840.113635.100.6.11.1` and the intermediate OID `1.2.840.113635.100.6.2.1`. Then verify the signature with the leaf key. The trusted root is Apple Root CA - G3, embedded as PEM; tests inject their own root.
-  2. Check that `bundleId` equals `BUNDLE_ID` and that `productId` is known (and enabled). `environment` is `Production`, or `Sandbox`/`Xcode` only when `ACCEPT_SANDBOX` is `"true"`.
-  3. Binding: if `appAccountToken` is present and isn't the caller's `account_id`, return `403 ACCOUNT_MISMATCH`. If `originalTransactionId` is already bound to another account, return `409 BOUND_TO_OTHER_ACCOUNT`. There is no automatic transfer in v1.
-  4. Record the transaction keyed by `transactionId`, unique. If it's already recorded, return `status:"already_recorded"` with **no new credit** (this covers restore and replay).
-  5. If it has `revocationDate`, record it and return `status:"revoked"`, with no grant.
-  6. For upgrades without their prerequisite, return `status:"pending_prerequisite"` with no grant. The grant happens automatically when the prerequisite is later recorded.
-  7. Otherwise grant credit atomically: a ledger insert with `idempotency_key = "grant:" + transactionId` plus the balance increment in one D1 batch, into the balance for the transaction's environment (`production` or `sandbox`). Return `status:"granted"`.
-  - Response: `{"transaction_id","product_id","environment","status","credit_granted_micros","balances","entitlements"}`.
-- `POST /v1/storekit/notifications {"signedPayload": "<JWS>"}` (App Store Server Notifications V2, no auth). Verify it the same way, including the nested `signedTransactionInfo`. Then:
-  - `REFUND` and `REVOKE`: set `revoked_at` and remove the entitlement. Claw back `min(credit_granted, current balance)` with idempotency key `refund:<transactionId>`; the shortfall is recorded on the row.
-  - `REFUND_REVERSED`: clear the revocation and restore the clawed-back amount, with key `refund_reversed:<transactionId>`.
-  - Unknown types return `200` and are ignored. Return 200 only after a successful commit.
-- Entitlements are derived from unrevoked recorded transactions, never stored as booleans.
+## Quote, consent and render recovery
 
-## Rendering and assist
+Get available model/size/quality options using `GET /v1/render/models`. Managed prices come only from validated `MANAGED_PRICE_TABLE`; BYOK prices are null and billing remains with the provider. Anthropic is not an image endpoint.
 
-Managed rendering spends the account's production balance and the owner's server-held `OPENAI_MANAGED_KEY`. It is **off** unless `MANAGED_RENDER_ENABLED == "true"` and the key is set; `GET /v1/me` reports the reason when it's off. Sandbox balances are spendable only when `ALLOW_SANDBOX_SPEND == "true"`, which is for bounded owner QA.
+A quote includes the exact render inputs and requires consent **before submitting them to this gateway**. It does not call the provider. The input digest covers prompt, decoded layout/source image bytes, source media type and explicit consent. Only the digest is retained in the quote; input photos/prompts are not stored. Example (the native app supplies a real encoded layout):
 
-- `GET /v1/render/models`: returns `{"providers":[{"provider":"managed"|"openai"|"custom","models":[{"id","sizes":[…],"qualities":[…],"price_micros":{"<size>|<quality>":micros}|null}]}]}`. Prices come only for `managed`, from the `MANAGED_PRICE_TABLE` var (JSON). BYOK is billed by the provider and its prices show as null.
-- `POST /v1/render/quotes {"provider","model","size","quality"}`: returns `{"quote_id","provider","model","size","quality","debit_micros","funding":"balance"|"sponsor_window"|"provider","expires_at"}`. The quote is valid for 10 minutes and is single use.
-  - For `managed`, `debit_micros` comes from the price table, and the quote checks the balance and the monthly cap.
-  - An active sponsor window with enough remaining credit funds a managed render before the customer balance.
-  - BYOK quotes have `debit_micros: 0` and `funding: "provider"`.
-- `POST /v1/render/jobs`. Body: `{"quote_id","idempotency_key"(uuid),"photo_upload_consent":true,"prompt":string(≤8000),"layout_image_png_base64":string,"source_image_base64"?:string,"source_media_type"?:"image/jpeg"|"image/png"}`.
-  - `photo_upload_consent` must be literally `true` whenever a source image is sent; otherwise `400 CONSENT_REQUIRED`.
-  - The debit is atomic. One D1 batch:
-    - consumes the quote (`used_at IS NULL`);
-    - inserts the job with a unique `(account_id, idempotency_key)`;
-    - inserts a ledger debit keyed `debit:<job_id>`;
-    - decrements the balance, guarded by `micros >= debit` and by the monthly cap.
-  - If any guard fails, nothing changes and the response is `402 INSUFFICIENT_CREDIT`, `402 MONTHLY_CAP_REACHED` or `409 QUOTE_USED`.
-  - Next comes the provider call. On provider failure a compensating ledger credit `refund:<job_id>` restores the debit, and the response is `502 PROVIDER_FAILED` with `refunded: true`.
-  - A repeated `idempotency_key` returns the stored job status and never debits twice. Images aren't stored server-side; only job metadata is.
-  - Response: `{"job_id","status":"succeeded","image_base64","media_type","debit_micros","balances","provider","model","label":"AI concept: cloud rendering, not a measured plan"}`.
-- `POST /v1/assist`. Body: `{"provider":"anthropic"|"openai"|"custom","task":"critique"|"plant_ideas"|"describe","layout_brief":string(≤16000),"question"?:string(≤2000)}`. This is text only and BYOK only, with no debit. Anthropic uses `@anthropic-ai/sdk` with the customer key, model `ANTHROPIC_ASSIST_MODEL` (default `claude-opus-5-5`), `output_config.effort: "low"`, and no sampling parameters. Returns `{"text","provider","model"}`.
+```json
+{
+  "provider":"managed",
+  "model":"gpt-image-2",
+  "size":"1024x1024",
+  "quality":"low",
+  "photo_upload_consent":true,
+  "prompt":"Render the approved garden layout",
+  "layout_image_png_base64":"<PNG base64>",
+  "source_image_base64":"<optional JPEG or PNG base64>",
+  "source_media_type":"image/jpeg"
+}
+```
 
-## Sponsorship (approved inventory only)
+`POST /v1/render/quotes` returns `{quote_id,provider,model,size,quality,debit_micros,funding,expires_at,destination_host,provider_billing,input_digest}`. Timestamps for quotes/jobs/windows are integer Unix milliseconds. Funding is immutable: `balance`, `sponsor_window` or `provider`. A quote expires in ten minutes. Managed quotes prefer a funded active sponsor window over customer balance. A quote is a proposal; availability is checked again when accepting it.
 
-There is no ad network, no targeting, and no endpoint that creates sponsors. The owner inserts approved sponsors with `wrangler d1 execute` after their own review; see `gateway/SPONSORS.md`.
+`POST /v1/render/jobs` repeats **exactly** the prompt/image/consent fields above and adds `quote_id` and a stable UUID `idempotency_key`. Provider/model/size/quality come from the stored quote. The app persists the key before submitting and reuses it after transport errors. Changed inputs return `QUOTE_INPUT_CHANGED`; changed idempotent payloads return `IDEMPOTENCY_MISMATCH`; key or destination changes require a fresh quote and consent review.
 
-- Tables enforce `category IN ('democratic_candidate','democratic_issue')`, a non-empty `paid_for_by`, `approved_by` and `approved_at`, and `budget_remaining_micros >= 0`.
-- `GET /v1/sponsorship/offers` returns `{"offers":[]}` unless a sponsor is active and approved with remaining budget. Each offer is `{"offer_id","sponsor_name","category","paid_for_by","disclosure","why_shown":"Shown to anyone whose included credit has run out. Not based on your photos, location or activity.","report_url","windows":[{"minutes":30|120|240|480|720|1440,"credit_cap_micros"}]}`.
-- `POST /v1/sponsorship/windows {"offer_id","minutes"}` → `{"window_id","expires_at","credit_cap_micros","remaining_micros"}`.
-  - It's allowed only when the customer's production balance is below the cheapest managed render price.
-  - One active window per account.
-  - The sponsor budget decrements by the cap atomically.
-  - Unused cap returns to the sponsor budget lazily when the window expires.
-- `POST /v1/sponsorship/report {"offer_id","reason"}` records a report.
-- `POST /v1/sponsorship/dismiss {"offer_id"}` hides that offer for this account for 30 days.
+Acceptance is one D1 transaction: assert tenant, current account, quote expiry/unused state, exact input and destination, then insert the unique quote/job/idempotency record, ledger debit, funding decrement and monthly spend. SQL assertions raise rather than relying on zero-row updates; CHECK and UNIQUE violations roll back every statement, following the [D1 batch transaction model](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch). Sponsor spending never changes customer balances. Concurrent funding/budget/quote changes return `409 QUOTE_OR_FUNDING_CHANGED`; quote-time insufficient credit/cap returns 402.
 
-## Configuration
+Only the transaction winner calls upstream. No retry redispatches. A failure or ambiguous upstream outcome refunds the gateway debit once; the operator absorbs any ambiguous managed provider charge. BYOK provider charges cannot be reversed by this gateway. A crashed pending job is refunded after ten minutes by retrieval or scheduled maintenance. The daily operator ceiling counts all accepted managed quotes, including failed/refunded attempts, and is not released by customer refunds. It is a conservative quoted-cost ceiling, **not** a guarantee about provider invoicing; real provider prices must be checked before enabling.
 
-- **Vars:** `BUNDLE_ID`, `ACCEPT_SANDBOX`, `MANAGED_RENDER_ENABLED`, `ALLOW_SANDBOX_SPEND`, `MANAGED_PRICE_TABLE`, `IMAGE_MODELS` (JSON list of allowed image model ids), `ANTHROPIC_ASSIST_MODEL`, `ENABLE_MAC_UPGRADE`, `KEK_CURRENT_VERSION`.
-- **Secrets:** `KEK_1` (and later versions), `ADMIN_TOKEN` (optional), `OPENAI_MANAGED_KEY` (optional).
-- No secret has a default; a missing `KEK_<current>` makes key routes return `503 CUSTODY_UNAVAILABLE`.
+Successful response:
+
+```json
+{"job_id":"UUID","status":"succeeded","image_base64":"<PNG>","media_type":"image/png","debit_micros":100,"funding":"balance","provider":"managed","model":"gpt-image-2","label":"AI concept: cloud rendering, not a measured plan","result_expires_at":1794168000000,"acknowledged":false,"balances":{"production":900,"sandbox":0}}
+```
+
+`GET /v1/render/jobs/:id` and identical POST retries return the account's stored status/result. `pending` uses HTTP 202. A failed result returns `{status:"failed",error_code,refunded,provider_billing,…}`. Successful images are encrypted in bounded 256-KiB plaintext chunks, accessible for seven days and never shared across tenants; expired ciphertext is removed on first access or the next ten-minute maintenance sweep.
+
+**After saving the image durably on the device**, call `POST /v1/render/jobs/:id/ack {}`. Acknowledgement preserves the debit when retention expires. An unacknowledged successful result that expires receives an explicit once-only refund; encrypted parts are deleted. After acknowledged retention expiry, metadata remains but `image_base64` is absent. Missing custody KEKs are an operational recovery failure, not permission to send the request upstream again.
+
+`POST /v1/assist` accepts `{provider:"anthropic"|"openai"|"custom",task:"critique"|"plant_ideas"|"describe",layout_brief:"…",question:"optional"}`. It sends text only using the saved BYOK credential, uses no gateway credit, and returns `{text,provider,model,provider_billing:true}`. Anthropic uses its SDK and configured model with low effort; no text model is guessed for custom/OpenAI endpoints.
+
+## Sponsorship
+
+See [SPONSORS.md](SPONSORS.md). No inventory is seeded and no public route creates sponsors. Only owner-approved Democratic candidate/issue records with disclosure and real finite funding qualify. No photos, location, political inference, or behavioral audience selection is used.
+
+- `GET /v1/sponsorship/offers` returns `{offers:[]}` when no active, funded, undismissed approved inventory exists. Offers include sponsor identity, category, paid-for-by disclosure, reason shown, report URL and funded window options.
+- `POST /v1/sponsorship/windows {offer_id,minutes}` requires exhausted production credit (below the cheapest configured render), atomically reserves a finite cap, and enforces one unsettled window per account. Allowed minutes: 30, 120, 240, 480, 720, 1440.
+- Response: `{window_id,expires_at,credit_cap_micros,remaining_micros}`.
+- Job acceptance rechecks sponsor and offer approval and expiry, and debits exactly the quoted window. A later failure returns money to that window while unsettled or to the original sponsor if settled. Expiry reclamation is atomic and once-only; in-flight debits are excluded from reclaimed unused funds.
+- `POST /v1/sponsorship/report {offer_id,reason}` records a 1–1000-character reason.
+- `POST /v1/sponsorship/dismiss {offer_id}` hides an offer for 30 days.
+
+## Configuration and release gates
+
+Runtime vars: `BUNDLE_ID`, `ACCEPT_SANDBOX`, `ENTITLEMENT_ENVIRONMENT`, `MANAGED_RENDER_ENABLED`, `ALLOW_SANDBOX_SPEND`, `MANAGED_PRICE_TABLE`, `MANAGED_DAILY_LIMIT_MICROS`, `IMAGE_MODELS`, `ANTHROPIC_ASSIST_MODEL`, `OPENAI_ASSIST_MODEL`, `ENABLE_MAC_UPGRADE`, `CREDIT_PRODUCTS`, `KEK_CURRENT_VERSION`. Secrets: `KEK_<n>`, optional `ADMIN_TOKEN`, optional `OPENAI_MANAGED_KEY`. Missing key custody fails closed. Managed rendering requires explicit enablement, a key, prices, encrypted result custody and a positive daily operator ceiling. Cron maintenance runs every ten minutes. Maximum-size encrypted result batches require the [Workers Paid D1 query allowance](https://developers.cloudflare.com/d1/platform/limits/); deploy and verify that capacity before enabling paid rendering.
+
+Deployment must separately verify D1 migrations, real Apple certificate validation fixtures and notification delivery, App Store product setup and account tokens, server-selected production/QA separation, Cloudflare strict public fetch and same-zone behavior, source privacy, provider billing/size/pricing compatibility, secrets rotation/retention and native durable acknowledgement. Local injected-network D1 tests establish no deployment, live provider availability, real purchase, TestFlight distribution or App Store acceptance.
+
+Local tooling is pinned to project-local Wrangler 4.85.0; global tooling is not used. Run `npm ci`, `npm run types:check`, `npm run typecheck`, `npm test`, and `npm run package:check` before release. The final command packages locally with `--dry-run`; it does not create resources or deploy. Generated configuration bindings are in `worker-bindings.d.ts`; regenerate with `npm run types` after config changes. CLI flags must be checked against this pinned version (it does not support the newer `--profile` option).

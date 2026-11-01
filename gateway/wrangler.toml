@@ -1,0 +1,47 @@
+# HomeGardenStudio gateway Worker. Isolated from every other Worker: own name, own D1.
+# Deployment (wrangler login / d1 create / secret / deploy) is the overseer's job.
+name = "homegardenstudio-gateway"
+main = "src/index.ts"
+# Pinned to the newest date the bundled workerd in the test pool accepts.
+# Bump at deploy time to the deployed runtime's current date.
+compatibility_date = "2026-08-15"
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "homegardenstudio"
+# Replace with the id printed by `wrangler d1 create homegardenstudio` (overseer step).
+database_id = "TO_BE_CREATED"
+migrations_dir = "migrations"
+
+# Secure defaults. Secrets (KEK_<n>, ADMIN_TOKEN, OPENAI_MANAGED_KEY) are never in this file.
+[vars]
+BUNDLE_ID = "com.ashleyraiteri.homegardenstudio"
+# TestFlight and App Review purchases arrive as Sandbox. Set to "false" once only production receipts are wanted.
+ACCEPT_SANDBOX = "true"
+MANAGED_RENDER_ENABLED = "false"
+MANAGED_DAILY_LIMIT_MICROS = "0"
+# Bounded owner QA only: lets sandbox credit pay for managed renders.
+ALLOW_SANDBOX_SPEND = "false"
+# JSON: {"<model>":{"<size>|<quality>":<micro-USD>}}. Empty means managed rendering stays unavailable.
+MANAGED_PRICE_TABLE = ""
+IMAGE_MODELS = '["gpt-image-2.5-sunburst","gpt-image-2.5-flare","gpt-image-2"]'
+ANTHROPIC_ASSIST_MODEL = "claude-opus-5-5"
+# Text model for openai/custom assist. Empty means openai/custom assist is unavailable.
+OPENAI_ASSIST_MODEL = ""
+ENABLE_MAC_UPGRADE = "true"
+KEK_CURRENT_VERSION = "1"
+
+# A separate QA deployment may select sandbox; clients cannot select entitlement scope.
+ENTITLEMENT_ENVIRONMENT = "production"
+# Explicitly configured StoreKit consumable product IDs mapped to micro-USD grants.
+CREDIT_PRODUCTS = "{}"
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true
