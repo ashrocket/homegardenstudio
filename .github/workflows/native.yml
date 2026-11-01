@@ -1,0 +1,115 @@
+name: Native verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # Standard public-repository runner, never a paid large/xlarge label.
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Matches the documented macos-26 arm64 runner image; fail if removed.
+      # https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CARGO_BUILD_JOBS: '1'
+      RUSTUP_TOOLCHAIN: stable
+      PYTHONDONTWRITEBYTECODE: '1'
+      DISKCLEANER_TUI: '0'
+      HOMEBREW_NO_ANALYTICS: '1'
+      WRANGLER_SEND_METRICS: 'false'
+      # Native tests have no cloud origin or signing/service credentials.
+      HGS_PRODUCTION_GATEWAY_URL: ''
+      HGS_SANDBOX_GATEWAY_URL: ''
+
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Prepare bounded native toolchain
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          bash scripts/check-build-space.sh
+          if ! command -v xcodegen >/dev/null; then
+            brew install xcodegen
+          fi
+          if ! python3 -c 'import re,subprocess,sys; v=re.search(r"\d+\.\d+\.\d+", subprocess.check_output(["xcodegen","--version"], text=True)); sys.exit(0 if v and tuple(map(int,v[0].split("."))) >= (2,45,4) else 1)'; then
+            brew upgrade xcodegen
+          fi
+          python3 -c 'import re,subprocess; v=re.search(r"\d+\.\d+\.\d+", subprocess.check_output(["xcodegen","--version"], text=True)); assert v and tuple(map(int,v[0].split("."))) >= (2,45,4), "XcodeGen >= 2.45.4 required"'
+          xcodegen --version
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup target add --toolchain stable aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim
+          rustc --version
+          node --version
+
+      - name: Install locked gateway dependencies
+        timeout-minutes: 10
+        working-directory: gateway
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify all source components
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hgs-ci-logs"
+          bash scripts/verify.sh full 2>&1 | tee "$RUNNER_TEMP/hgs-ci-logs/full-verifier.log"
+
+      - name: Exercise synthetic native interactions
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          # The full verifier has built HgsCore.xcframework. Do not rebuild Rust here.
+          test -d apple/Frameworks/HgsCore.xcframework
+          bash scripts/native-uiqa.sh run \
+            --evidence-root "$GITHUB_WORKSPACE/.coordination/native-uiqa" \
+            --runtime-identifier com.apple.CoreSimulator.SimRuntime.iOS-26-5
+
+      - name: Retain only synthetic verification evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
+          # The script permits only private evidence roots; paths below remain an exact allowlist.
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/hgs-ci-logs/*.log
+            apple/build/logs/*.log
+            apple/build/DerivedData/Logs/Test/*.xcresult/**
+            .coordination/native-uiqa/*/*.log
+            .coordination/native-uiqa/*/Interaction.xcresult/**
+            .coordination/native-uiqa/*/attachments/**/*.png
+            .coordination/native-uiqa/*/summary.json
+            .coordination/native-uiqa/*/receipt.json
+            .coordination/native-uiqa/*/identity.json
