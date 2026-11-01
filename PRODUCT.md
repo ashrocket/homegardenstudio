@@ -26,10 +26,13 @@ Store customer keys securely on Cloudflare: authenticated per-user custody, encr
 - Both-platform bundle: US $4.99, including $5 of rendering credit.
 - iOS-to-bundle upgrade: US $3.00, including $5 of rendering credit. Require verified ownership of the iOS unlock.
 - macOS-to-bundle upgrade: US $0.99, including $5 of rendering credit. Require verified ownership of the macOS unlock. (Owner confirmed 2026-11-01.)
+- Prepaid promotion: US $10.00 buys $15 of HomeGardenStudio rendering credit. The offer lasts 90 days from deliberate launch activation; no launch date is set before the store product is ready. Purchased credit has no expiry or automatic renewal. (Owner confirmed 2026-11-01.)
 
 Verify StoreKit purchases server-side, bind entitlements to the customer, and grant each qualifying transaction's credit exactly once. Restore must not mint credit again. Refunds/revocations must be handled. The owner clarified that solo purchases receive $2, while bundle or paid bundle upgrades receive $5. The earlier suggestion of 5/10 starter renders is superseded.
 
-Do not promise that $2 buys 100 cloud images. Show the actual quoted debit before submitting a render. Local plan/3D previews do not consume cloud credit. Additional usage uses optional prepaid credit with no automatic renewal (owner confirmed 2026-11-01). A user-selected monthly spending ceiling limits use of existing credit; changing it does not buy credit or create a subscription. Exact additional pack prices and credit amounts remain to be finalized. Preserve purchased balances according to platform rules. Use Apple's applicable in-app purchase mechanisms, no hidden web checkout.
+Do not promise that $2 buys 100 cloud images. Show the actual quoted debit before submitting a render. Local plan/3D previews do not consume cloud credit. Additional usage uses optional prepaid credit with no automatic renewal. A user-selected monthly spending ceiling limits use of existing credit; changing it does not buy credit or create a subscription. The balance is in-app spending value; future per-render prices may change with provider costs, while an approved valid quote retains its disclosed debit. No fixed image count or raw-provider-token amount is promised. Render prices must cover the promotional credit grant, applicable store commission and operating costs before managed rendering is enabled. Use Apple's applicable in-app purchase mechanisms, no hidden web checkout.
+
+The 90-day deadline limits buying the promotional offer, not spending already-purchased credit. The app and gateway must hide expired offers, and App Store product availability must close consistently. Valid verified transactions and restores remain honored after the offer closes. Do not invent replacement pack prices after the promotion. Exact HomeGardenStudio IAP price points and schedules must be verified in App Store Connect before sale.
 
 ## Optional sponsorship
 
