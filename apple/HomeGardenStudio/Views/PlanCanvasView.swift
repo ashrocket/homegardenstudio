@@ -50,7 +50,7 @@ struct PlanCanvasView: View {
                     return .handled
                 }
                 .onKeyPress(.delete) { store.remove(undoManager: undoManager); return .handled }
-                .accessibilityLabel("Garden plan canvas")
+                .accessibilityLabel("Garden plan canvas").accessibilityIdentifier("preview.plan")
                 .accessibilityHint("Use the feature list and inspector to select, position, resize, and rotate features without dragging.")
                 .overlay(alignment: .bottomLeading) { canvasStatus }
                 .overlay(alignment: .bottomTrailing) {

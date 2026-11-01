@@ -5,16 +5,17 @@ import UniformTypeIdentifiers
 struct DocumentWorkspace:View {
     let document:PlanDocument
     let fileURL:URL?
+    var services:StudioServices
     @State private var store:PlanStore?
     @State private var error:String?
     var body:some View {
         Group {
-            if let store { WorkspaceView(store:store,fileURL:fileURL) }
+            if let store { WorkspaceView(store:store,fileURL:fileURL,services:services) }
             else if let error { ContentUnavailableView("Could not open plan",systemImage:"exclamationmark.triangle",description:Text(error)) }
             else { ProgressView("Opening plan") }
         }.task {
             guard store == nil else { return }
-            do { store = try PlanStore(document:document) } catch { self.error = error.localizedDescription }
+            do { store = try PlanStore(document:document,entitlements:services); await services.prepare() } catch { self.error = error.localizedDescription }
         }
     }
 }
@@ -22,6 +23,7 @@ struct DocumentWorkspace:View {
 struct WorkspaceView:View {
     @Bindable var store:PlanStore
     let fileURL:URL?
+    var services:StudioServices
     @Environment(\.undoManager) private var undoManager
     @State private var mode = "Plan"
     @State private var library = false
@@ -37,8 +39,14 @@ struct WorkspaceView:View {
     @State private var urlSheet = false
     @State private var urlText = ""
     @State private var importing = false
+    @State private var dropTargeted = false
+    @State private var savedConcepts = false
     @State private var photo:PhotosPickerItem?
     @State private var showSampleWarning = false
+    @State private var accountSheet = false
+    @State private var accountAfterTrial = false
+    @State private var assistantSheet = false
+    @State private var renderSheet = false
     @State private var showJSONWarning = false
     var body:some View {
         NavigationStack {
@@ -55,23 +63,31 @@ struct WorkspaceView:View {
                     .onChange(of: geometry.size.width) { _, width in wideWorkspace = width >= 850 }
                 }
                 HStack(spacing:12) {
-                    Button { library.toggle() } label: { Label("Library",systemImage:"plus") }
+                    Button { library.toggle() } label: { Label("Library",systemImage:"plus") }.accessibilityIdentifier("workspace.library")
                     Menu {
                         PhotosPicker(selection:$photo,matching:.images,preferredItemEncoding:.current,photoLibrary:.shared()) { Label("Photo library",systemImage:"photo") }
                         Button("Image or PDF…") { importFiles = true }
                         Button("Page URL…") { urlSheet = true }
                         Button("Sources and calibration…") { sources = true }
-                    } label: { Label("Import",systemImage:"square.and.arrow.down") }
+                    } label: { Label("Import",systemImage:"square.and.arrow.down") }.disabled(importing)
                     Spacer(minLength:0)
-                    Button { inspector.toggle() } label: { Label("Inspector",systemImage:"sidebar.right") }
+                    Button { inspector.toggle() } label: { Label("Inspector",systemImage:"sidebar.right") }.accessibilityIdentifier("workspace.inspector")
                 }.buttonStyle(.bordered).padding(10).background(.bar)
-            }.navigationTitle(store.project.name)
+            }.onDrop(of: DropImport.acceptedTypes, isTargeted: $dropTargeted, perform: acceptDrop)
+                .overlay(alignment: .top) { if dropTargeted { Label("Drop images, PDFs or HTTPS links to import sources", systemImage: "square.and.arrow.down").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).allowsHitTesting(false) } }
+                .navigationTitle(store.project.name)
                 .toolbar { workspaceToolbar }
-                .inspector(isPresented:$inspector) { InspectorPanel(store:store).inspectorColumnWidth(min:280,ideal:330,max:450) }
+                .inspector(isPresented:$inspector) { NavigationStack { InspectorPanel(store:store).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inspector = false }.accessibilityIdentifier("inspector.done") } } }.inspectorColumnWidth(min:280,ideal:330,max:450) }
                 .sheet(isPresented:Binding(get:{library && !wideWorkspace},set:{library = $0})) { NavigationStack { LibraryPanel(store:store).toolbar { Button("Done") { library = false } } }.frame(minWidth:320,minHeight:450).presentationDetents([.medium,.large]).presentationBackgroundInteraction(.enabled(upThrough:.medium)) }
+                .sheet(isPresented:$savedConcepts) { SavedConceptsSheet(document: store.document) }
+                .sheet(isPresented:$accountSheet) { AccountSheet(services:services) }
+                .sheet(isPresented:$assistantSheet) { AssistantSheet(store:store,services:services) }
+                .sheet(isPresented:$renderSheet) {
+                    if let account = services.account, let renderer = services.renderer { CloudRenderSheet(store: store, account: account, renderer: renderer) }
+                }
                 .sheet(isPresented:$sources) { NavigationStack { SourcesPanel(store:store).toolbar { Button("Done") { sources = false } } }.frame(minWidth:320,minHeight:450) }
                 .sheet(isPresented:$urlSheet) { urlImportSheet }
-                .sheet(isPresented:$store.showTrialLimit) { trialSheet }
+                .sheet(isPresented:$store.showTrialLimit, onDismiss: { if accountAfterTrial { accountAfterTrial = false; accountSheet = true } }) { trialSheet }
                 .alert("Plan notice",isPresented:Binding(get:{store.error != nil},set:{if !$0 { store.error = nil }})) { Button("OK") { store.error = nil } } message: { Text(store.error ?? "") }
                 .confirmationDialog("Replace this plan with the synthetic sample?",isPresented:$showSampleWarning,titleVisibility:.visible) { Button("Open sample plan") { store.openSample(undoManager:undoManager) } } message: { Text("This replaces the current layout. You can undo the change; imported originals remain in the package.") }
                 .confirmationDialog("Replace this plan from JSON?",isPresented:$showJSONWarning,titleVisibility:.visible) { Button("Choose JSON…") { importJSON = true } } message: { Text("JSON contains layout and source metadata only. To preserve photos and attachments, open an .hgsplan package instead. You can undo this replacement.") }
@@ -83,6 +99,7 @@ struct WorkspaceView:View {
                 .fileExporter(isPresented:$exportJSON,document:exported,contentType:.json,defaultFilename:store.project.name) { result in if case .failure(let error) = result { store.error = error.localizedDescription } }
                 .onChange(of:photo) { _,item in
                     guard let item else { return }
+                    guard !importing else { photo = nil; return }
                     importing = true
                     Task {
                         defer { importing = false; photo = nil }
@@ -108,17 +125,21 @@ struct WorkspaceView:View {
     }
     @ToolbarContentBuilder private var workspaceToolbar:some ToolbarContent {
         ToolbarItem(placement:.principal) {
-            Picker("View",selection:$mode) { Text("Plan").tag("Plan"); Text("Isometric").tag("Isometric"); Text("3D").tag("3D") }.pickerStyle(.segmented).frame(maxWidth:280)
+            Picker("View",selection:$mode) { Text("Plan").tag("Plan"); Text("Isometric").tag("Isometric"); Text("3D").tag("3D") }.pickerStyle(.segmented).frame(maxWidth:280).accessibilityIdentifier("workspace.viewPicker")
         }
         ToolbarItemGroup(placement:.primaryAction) {
-            Button { undoManager?.undo() } label: { Label("Undo",systemImage:"arrow.uturn.backward") }.disabled(!(undoManager?.canUndo ?? false)).help(store.history.undoLabel ?? "Undo")
-            Button { undoManager?.redo() } label: { Label("Redo",systemImage:"arrow.uturn.forward") }.disabled(!(undoManager?.canRedo ?? false)).help(store.history.redoLabel ?? "Redo")
+            Button { undoManager?.undo() } label: { Label("Undo",systemImage:"arrow.uturn.backward") }.disabled(!(undoManager?.canUndo ?? false)).help(store.history.undoLabel ?? "Undo").accessibilityIdentifier("workspace.undo")
+            Button { undoManager?.redo() } label: { Label("Redo",systemImage:"arrow.uturn.forward") }.disabled(!(undoManager?.canRedo ?? false)).help(store.history.redoLabel ?? "Redo").accessibilityIdentifier("workspace.redo")
             Menu {
                 Button("Feature library",systemImage:"plus") { library = true }
+                Button("Account, purchases and providers",systemImage:"person.crop.circle") { accountSheet = true }
+                Button("Garden assistant",systemImage:"sparkles") { assistantSheet = true }
+                if services.renderer != nil { Button("Cloud concepts and saved requests", systemImage: "photo.badge.arrow.down") { renderSheet = true } }
                 Button("Sources and calibration",systemImage:"ruler") { sources = true }
                 Button("Inspector",systemImage:"sidebar.right") { inspector.toggle() }
                 if store.drawingBoundary { Button("Done drawing boundary") { store.finishBoundary(undoManager:undoManager) } }
                 Divider()
+                Button("Saved concept images", systemImage: "photo.stack") { savedConcepts = true }
                 Button("Export portable plan…") {
                     do { exportedPackage = PackageExport(try store.document.snapshot(contentType: .gardenPlan)); exportPackage = true } catch { store.error = error.localizedDescription }
                 }
@@ -128,7 +149,7 @@ struct WorkspaceView:View {
                 Button("Load plan from JSON…") { showJSONWarning = true }
                 Button("Open sample plan") { if store.project.items.isEmpty && store.project.sources.isEmpty { store.openSample(undoManager:undoManager) } else { showSampleWarning = true } }
                 if !store.selection.isEmpty { Divider(); Button("Duplicate selected") { store.duplicate(undoManager:undoManager) }.keyboardShortcut("d",modifiers:.command); Button("Delete selected",role:.destructive) { store.remove(undoManager:undoManager) } }
-            } label: { Label("Workspace actions",systemImage:"ellipsis.circle") }
+            } label: { Label("Workspace actions",systemImage:"ellipsis.circle") }.accessibilityIdentifier("workspace.actions")
         }
     }
     private var trialSheet:some View {
@@ -137,7 +158,8 @@ struct WorkspaceView:View {
                 Image(systemName:"leaf.circle").font(.largeTitle)
                 Text("Free plan: up to 12 features per plan.").font(.title2.bold())
                 Text("You can keep opening, editing, and exporting all your existing work, including plans with more than 12 features. Delete a feature to add a different one.")
-                Text("Unlimited features and rendering credit will be available with the paid unlock when purchases launch. No purchase is available in this build.").foregroundStyle(.secondary)
+                Text("Unlimited features and rendering credit are offered through the App Store when this build has verified account and product access.").foregroundStyle(.secondary)
+                Button("Account and unlock options") { accountAfterTrial = true; store.showTrialLimit = false }
                 Button("Continue editing") { store.showTrialLimit = false }.buttonStyle(.borderedProminent)
             }.padding(24).frame(maxWidth:420).navigationTitle("Free plan").toolbar { Button("Done") { store.showTrialLimit = false } }
         }
@@ -151,7 +173,24 @@ struct WorkspaceView:View {
             }.navigationTitle("Import page URL").toolbar { Button("Cancel") { urlSheet = false } }
         }.frame(minWidth:320,minHeight:260)
     }
+    private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !importing else { return false }
+        do { try DropImport.validateCount(providers.count) } catch { store.error = error.localizedDescription; return false }
+        importing = true
+        Task {
+            defer { importing = false }
+            var failures: [String] = []
+            for provider in providers {
+                do { try store.importPrepared(try await DropImport.prepare(provider), undoManager: undoManager) }
+                catch { failures.append(error.localizedDescription) }
+            }
+            sources = true
+            if !failures.isEmpty { store.error = failures.joined(separator: "\n") }
+        }
+        return true
+    }
     private func runImport(_ work:@escaping @Sendable () async throws -> PreparedImport) {
+        guard !importing else { return }
         importing = true
         Task { defer { importing = false }; do { try store.importPrepared(try await work(),undoManager:undoManager); sources = true } catch { store.error = error.localizedDescription } }
     }

@@ -6,19 +6,28 @@ import UniformTypeIdentifiers
 nonisolated struct PreparedImport: Sendable { var source: Source; var bytes: Data; var storageName: String }
 nonisolated enum ImportService {
     static let maxFileBytes = 40 * 1024 * 1024
-    static func file(_ url: URL) throws -> PreparedImport {
+    static func file(_ url: URL, typeHint: UTType? = nil) throws -> PreparedImport {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let attributes = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard attributes.isRegularFile == true else { throw EngineError(code: "UNSUPPORTED_FILE", message: "Choose a regular image or PDF file.") }
+        let size = attributes.fileSize ?? 0
         guard size <= maxFileBytes else { throw EngineError(code: "IMPORT_LIMIT", message: "Choose a file smaller than 40 MB.") }
-        return try prepare(Data(contentsOf: url), filename: url.lastPathComponent, type: UTType(filenameExtension: url.pathExtension))
+        let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+        let data = try handle.read(upToCount: maxFileBytes + 1) ?? Data()
+        return try prepare(data, filename: url.lastPathComponent, type: typeHint ?? UTType(filenameExtension: url.pathExtension))
     }
     static func prepare(_ data: Data, filename: String, type: UTType?) throws -> PreparedImport {
         guard !data.isEmpty, data.count <= maxFileBytes else { throw EngineError(code: "IMPORT_LIMIT", message: "Choose a nonempty file smaller than 40 MB.") }
-        let imageSource = CGImageSourceCreateWithData(data as CFData, nil)
+        let imageSource = CGImageSourceCreateWithData(data as CFData, nil).flatMap { source -> CGImageSource? in
+            guard let identifier = CGImageSourceGetType(source), let detected = UTType(identifier as String),
+                  detected.conforms(to: .image), CGImageSourceGetCount(source) > 0,
+                  CGImageSourceGetStatus(source) == .statusComplete else { return nil }
+            return source
+        }
         let detected = imageSource.flatMap { CGImageSourceGetType($0) }.flatMap { UTType($0 as String) }
         let resolved = detected ?? type ?? .data
-        guard imageSource != nil || resolved.conforms(to: .pdf) else { throw EngineError(code: "UNSUPPORTED_FILE", message: "Choose an image or PDF.") }
+        guard imageSource != nil || (resolved.conforms(to: .pdf) && data.starts(with: Data("%PDF-".utf8))) else { throw EngineError(code: "UNSUPPORTED_FILE", message: "Choose an image or PDF.") }
         let props = imageSource.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         let ext = resolved.preferredFilenameExtension ?? "bin"

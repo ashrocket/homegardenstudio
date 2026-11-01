@@ -116,7 +116,7 @@ struct CommitField: View {
     @FocusState private var focused:Bool
     init(_ label:String,value:String,commit:@escaping(String)->Void) { self.label = label; self.value = value; self.commit = commit }
     var body:some View {
-        TextField(label,text:$draft).focused($focused).onAppear { draft = value }.onChange(of:value) { _,value in if !focused { draft = value } }.onSubmit { focused = false }.onChange(of:focused) { was,now in if was && !now && draft != value { commit(draft) } }
+        TextField(label,text:$draft).accessibilityIdentifier("field." + label).focused($focused).onAppear { draft = value }.onChange(of:value) { _,value in if !focused { draft = value } }.onSubmit { focused = false }.onChange(of:focused) { was,now in if was && !now && draft != value { commit(draft) } }
     }
 }
 private struct StructureEditor:View {

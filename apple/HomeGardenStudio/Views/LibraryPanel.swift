@@ -13,7 +13,7 @@ struct LibraryPanel: View {
                             HStack {
                                 Label(entry.label,systemImage:symbol(entry.kind)).font(.headline)
                                 Spacer()
-                                Button { store.add(entry.kind,undoManager:undoManager) } label: { Label("Add \(entry.label)",systemImage:"plus.circle") }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                Button { store.add(entry.kind,undoManager:undoManager) } label: { Label("Add \(entry.label)",systemImage:"plus.circle") }.labelStyle(.iconOnly).buttonStyle(.borderless).accessibilityIdentifier("library.add." + entry.kind)
                             }
                             Text("\(LengthFormatter.format(entry.width,units:store.project.units)) × \(LengthFormatter.format(entry.depth,units:store.project.units)) × \(LengthFormatter.format(entry.height,units:store.project.units))").font(.caption)
                             Text(entry.description).font(.caption).foregroundStyle(.secondary)

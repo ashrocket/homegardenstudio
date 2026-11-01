@@ -122,6 +122,13 @@ nonisolated final class NativeTests:XCTestCase {
         let source = Source(id: "src-" + sha.prefix(16), kind: "url", title: "Synthetic source", originalFilename: "source.html", sha256: sha, byteCount: bytes.count, mediaType: "text/html", url: "https://example.com", pixelWidth: nil, pixelHeight: nil, registration: nil, note: "Synthetic fixture")
         return PreparedImport(source: source, bytes: bytes, storageName: sha + ".html")
     }
+    @MainActor func testNativeProjectIdentityPersistsAcrossPackageRoundTrip() throws {
+        let doc = PlanDocument()
+        let snapshot = try doc.snapshot(contentType: .gardenPlan)
+        let reopened = try PlanDocument.read(PlanDocument.package(snapshot))
+        XCTAssertEqual(reopened.projectID, doc.projectID)
+        XCTAssertEqual(try PlanDocument.read(PlanDocument.package(reopened)).projectID, doc.projectID)
+    }
     @MainActor func testInvalidUTF8AndNULRejectedBeforeFFI() throws {
         let valid = try HgsEngine(name: "Synthetic").snapshot()
         for invalid in [Data([0xff, 0xfe]), valid + Data([0]) + Data("trailing garbage".utf8)] {
@@ -130,7 +137,7 @@ nonisolated final class NativeTests:XCTestCase {
         }
     }
     @MainActor func testUnexpectedPackageEntryRejected() throws {
-        let wrapper = PlanDocument.package(try PlanDocument().snapshot(contentType: .gardenPlan))
+        let wrapper = try PlanDocument.package(PlanDocument().snapshot(contentType: .gardenPlan))
         let extra = FileWrapper(regularFileWithContents: Data([1]))
         extra.preferredFilename = "unexpected.bin"
         wrapper.addFileWrapper(extra)

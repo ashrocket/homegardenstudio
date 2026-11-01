@@ -37,12 +37,23 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>HGSKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)com.ashleyraiteri.homegardenstudio</string>
+	<key>HGSProductionGatewayURL</key>
+	<string>$(HGS_PRODUCTION_GATEWAY_URL)</string>
+	<key>HGSSandboxGatewayURL</key>
+	<string>$(HGS_SANDBOX_GATEWAY_URL)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.lifestyle</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

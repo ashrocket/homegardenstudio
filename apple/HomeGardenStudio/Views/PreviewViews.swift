@@ -25,7 +25,7 @@ struct IsometricView: View {
                     context.stroke(path, with: .color(.primary.opacity(0.3)), lineWidth:0.6)
                 }
             }.background(Color.canvasBackground)
-            .accessibilityLabel("Local isometric preview. Use Plan and the inspector to edit the layout.")
+            .accessibilityLabel("Local isometric preview. Use Plan and the inspector to edit the layout.").accessibilityIdentifier("preview.isometric")
             HStack {
                 Text("Local isometric preview").font(.caption)
                 Spacer()
@@ -53,7 +53,7 @@ struct Scene3DView: View {
                     content.cameraTarget = root
                 }.realityViewCameraControls(.orbit)
                     .id(sceneRevision)
-                    .accessibilityLabel("Local 3D layout preview. Drag to orbit. Use Plan and the inspector to edit.")
+                    .accessibilityLabel("Local 3D layout preview. Drag to orbit. Use Plan and the inspector to edit.").accessibilityIdentifier("preview.threeD")
             } else { ProgressView("Building local 3D preview").frame(maxWidth:.infinity,maxHeight:.infinity) }
             Text("Local 3D preview: your layout with simplified models (not a photo)").font(.caption).padding().frame(maxWidth:.infinity)
         }.task(id:store.revision) {
