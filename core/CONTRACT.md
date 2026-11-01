@@ -32,6 +32,8 @@ The Rust engine owns the project model, geometry, validation, history and persis
       "params": {},
       "position_certainty": "estimated",
       "size_certainty": "product_listing",
+      "position_evidence": null,
+      "size_evidence": {"method":"product_listing","values":[2.2098,2.0066,2.2098],"note":"Dimensions asserted from the attached product listing.","source_id":null},
       "source_ids": [],
       "product": {"title": "Refugio Black Square Premium (listed 87 x 79 x 87 in)", "url": "https://refugiosaunaco.com/products/black-square-premium-thermo-spruce-outdoor-cube-sauna-4-to-6-person-capacity", "listed_dimensions": "87 in W x 79 in L x 87 in H"},
       "locked": false,
@@ -50,8 +52,11 @@ The Rust engine owns the project model, geometry, validation, history and persis
 - `kind` (enum): `plant`, `tree`, `pond`, `fire_pit`, `pergola`, `sauna`, `tool_shed`, `bin_screen`, `patio`, `raised_bed`, `path`, `fence`, `privacy_screen`, `structure`.
 - Certainty enums. `position_certainty` is one of `measured`, `estimated` or `unregistered_photo`. `size_certainty` is one of `measured`, `estimated` or `product_listing`. `boundary_certainty` and a structure's `certainty` are `measured` or `estimated`.
 - Source `kind` is `photo`, `file` or `url`. The host computes `id`, `sha256` and `byte_count` and stores the original bytes. The engine stores metadata only.
-- `registration` (top-down photo scale calibration): `{"p1":[px,py],"p2":[px,py],"distance_m":4.0}`. Pixel points must differ by at least 10 px; `distance_m` must be in `0.1..=500`.
+- `registration` (two-point reference scale only; no perspective correction or site-coordinate registration): `{"p1":[px,py],"p2":[px,py],"distance_m":4.0}`. Pixel points must differ by at least 10 px; `distance_m` must be in `0.1..=500`.
 - `backdrop`: `{"source_id":"src-…","x":0,"y":0,"rotation":0,"opacity":0.6,"meters_per_pixel":null}`. `meters_per_pixel` is derived as `distance_m / pixel_distance` and is non-null only when the source is registered.
+- `position_evidence` and `size_evidence` are optional nullable persisted objects: `{"method":"field_measurement"|"product_listing","values":[a,b,c],"note":"...","source_id":null|"src-..."}`. Position values are exactly `[x,y,rotation]`; size values are exactly `[width,depth,height]`. Position accepts only `field_measurement`. A measured or listed certainty requires matching evidence and exact values; estimated fields require null evidence. Product-listing evidence also requires product metadata. Legacy files may omit evidence only for estimated/unregistered fields; unsupported measured/listed claims fail validation.
+- Field measurement is an explicit user attestation, not engine verification of survey accuracy. An optional evidence source must already occur in that item's `source_ids`; sources remain metadata references to host-preserved originals. Removing/unlinking that source or recalibrating it invalidates each field citing it, clears that evidence and downgrades that field to estimated. Undo restores the evidence together with its source state. Field assertions without source references remain independent of source changes.
+- Two-point calibration does not establish site coordinates, even for a photo described as top-down. Tracing always remains estimated (or unregistered_photo), and `registered_source:<id>` is rejected as measurement evidence. Supporting source IDs are automatically attached when tracing from the backdrop.
 - `params` by kind (absent keys take defaults):
   - `fire_pit`: `pit_diameter` 1.07 and `clearance` 3.05. The item footprint is the contained gravel circle; the clearance ring is checked separately.
   - `bin_screen`: `wall_thickness` 0.05. This is an L-shaped, roofless screen with walls along the back (`-y`) and left (`-x`) edges.
@@ -99,18 +104,19 @@ Every successful mutating command creates exactly one undo step labelled as list
 | `remove_source` | `id` (also removes it from items' `source_ids` and clears backdrop if used) | `Remove <title>` |
 | `register_source` | `id`, `p1`, `p2`, `distance_m` (photo sources only) | `Calibrate <title>` |
 | `set_backdrop` | `source_id`, `x`, `y`, `rotation`, `opacity` (or `{"op":"set_backdrop","clear":true}`) | `Set backdrop` / `Clear backdrop` |
-| `mark_measured` | `id`, `evidence`: `"field_measurement"` or `"registered_source:<source id>"` | `Mark <name> measured` |
+| `mark_measured` | `id`, `evidence`: `"field_measurement"`; optional `field`: `"position"` (default) or `"size"`, `note`, `source_id` | `Mark <name> measured` |
 | `set_project_meta` | optional `name`, `units` | `Rename plan` / `Change units` |
 | `undo` / `redo` | — | (not recorded) |
 
 Rules:
 1. Items locked with `locked: true` reject `set_transform`, `move_items` and geometry patches (`LOCKED`). An unlock patch (`{"locked": false}`) is allowed.
 2. `traced_from_backdrop: true` sets `position_certainty` to `unregistered_photo` when the current backdrop source is unregistered, and to `estimated` otherwise.
-3. Any move of an item whose `position_certainty` is `measured` downgrades it to `estimated` (a moved item is a proposal).
-4. `mark_measured` with `registered_source:<id>` fails `UNREGISTERED_SOURCE` if that source has no registration, and `NOT_FOUND` if it doesn't exist. **An unregistered photo can never establish measured coordinates.**
-5. `width`/`depth` changes on `circle` kinds keep them equal (the last provided value wins; `width` if both differ).
-6. Mutations validate limits before applying. On error the project is unchanged and no undo step is recorded.
-7. History stores whole-project snapshots, capped at 200 undo steps. A new mutation clears the redo stack.
+3. Moving, rotating or resizing an item invalidates its position evidence and measured position. Editing width, depth, height or shape params also invalidates measured/product-listed size evidence. A position-only move/rotation preserves size evidence. Editing product metadata downgrades listed size. Direct certainty patches cannot establish a new measured/listed claim without evidence. Duplicates lose measured position even when copied without an offset.
+4. `mark_measured` records a field-specific explicit user assertion, including the exact current field values, optional linked source and note (default `User asserted field measurement.`). `registered_source:<id>` fails `UNREGISTERED_SOURCE`, or `NOT_FOUND` if absent; scale alone never establishes measured coordinates.
+5. Width/depth changes on circle kinds keep them equal; width wins if both are supplied. Imported unequal circles fail validation. Fire-pit diameter must fit within its contained gravel footprint.
+6. Mutations validate limits before applying. Errors preserve the project, revision, undo and redo. Empty or over-limit evidence notes fail validation.
+7. History stores whole-project compact JSON snapshots, with a combined 200-step and 32 MiB undo/redo storage budget (serialized bytes, labels and step metadata). Oldest undo steps are evicted first, then farthest redo steps if needed. A successful new mutation clears redo. The current project is never evicted.
+8. Reject input before JSON parsing: documents over 8 MiB, commands over 256 KiB, queries over 64 KiB. Canonical saved document bytes must also stay within 8 MiB after every mutation. Strings: names/species 200 Unicode scalar values, notes/evidence/style 4000, URLs 2000, source title/filename and product title 400; identifiers 80 ASCII characters. Polygons have 3–512 vertices, items at most 64 unique source links. Params allow only the kind-specific bounded scalar values. Serde's nesting limit is enabled. These bounds apply to imports as well as commands.
 
 Command response: `{"ok":true,"revision":12,"created":["i8"],"changed":["i8"],"removed":[],"history":{"can_undo":true,"can_redo":false,"undo_label":"Add Sauna","redo_label":null}}`.
 Error response: `{"ok":false,"error":{"code":"NOT_FOUND","message":"No item i99"}}`.
@@ -161,4 +167,12 @@ char *hgs_engine_query(HgsEngine *engine, const char *query_json);     /* never 
 void hgs_string_free(char *s);                          /* NULL-safe; frees every char* returned above */
 ```
 
+Names passed to `hgs_engine_new` are at most 200 Unicode scalar values / 800 UTF-8 bytes; invalid UTF-8 or oversized names return NULL. NULL name uses the default. All C input pointers must be live NUL-terminated allocations; strings are scanned only up to their input cap before copying.
+
 Every entry point catches panics (`catch_unwind`) and returns an `INTERNAL` error JSON instead of unwinding across FFI. NULL engine or NULL JSON gives `INVALID_VALUE`. The engine isn't thread-safe; the Swift wrapper serialises access on the main actor. The static library is built for `aarch64-apple-darwin`, `x86_64-apple-darwin` (lipo'd universal), `aarch64-apple-ios` and `aarch64-apple-ios-sim`, then packaged as `HgsCore.xcframework` by `scripts/build-core-xcframework.sh`.
+
+## Scene and rendering details
+
+`scene` emits primitives for all catalog kinds. Plant/tree foliage uses spheres; ponds, gravel circles and fire bowls use cylinders; pergolas use four posts, two beams and eight slats. Bin screens use two walls, no roof. Structure polygons are conservatively represented by their axis-aligned bounding box in the native 3D preview; precise outlines remain in 2D, isometric and rendering briefs. Part offsets rotate about their parent item. Ground bounds include the boundary, structures and actual rotated footprints, padded 2 m; empty plans use [-2,-2] to [2,2]. Thin/short configurations clamp part thicknesses to the parent dimensions; bin wall thickness clamps to half width/depth consistently with the footprint.
+
+Rendering prompts include exact centres/dimensions/rotations to six decimal places, boundary and structure vertices, source IDs/titles/checksums, backdrop placement, kind-specific geometry and uncertainty text. Coordinate axes and rotation convention are explicit. These instructions bind requested layout; they cannot guarantee a remote image model obeys it. FNV-1a hashes the complete compact snapshot, including evidence/source metadata, independent of style.

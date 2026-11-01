@@ -1,0 +1,13 @@
+[package]
+name = "hgs-ffi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "C ABI over hgs-core for the Apple apps"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+hgs-core = { path = "../hgs-core" }
+serde_json = "1"
