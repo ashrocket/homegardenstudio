@@ -10,4 +10,5 @@ Plan a garden at real dimensions on iPhone, iPad and Mac. Place plants, ponds, f
 
 - [Support](support.html)
 - [Privacy policy](privacy.html)
+- [Apple-only development edition](apple-only.html)
 - [Source code](https://github.com/ashrocket/homegardenstudio)

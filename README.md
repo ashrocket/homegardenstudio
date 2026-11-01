@@ -6,9 +6,11 @@ A native garden planner for macOS 26 and iOS/iPadOS 26, with a shared Rust layou
 
 Import your photos and product links, arrange features at real dimensions, and explore a plan, an isometric drawing and a 3D view. Local editing and previews work without cloud rendering. Optional AI services can produce photorealistic concepts from your source photos and layout.
 
-Save a portable `.hgsplan` document containing the layout, unchanged imported originals and attached concept images. The workspace keeps secondary panels collapsed, with tools available beside the canvas or in compact sheets. Free plans allow twelve new features; existing larger plans remain editable and exportable.
+Save a portable `.hgsplan` document containing the layout, unchanged imported originals and attached concept images. The workspace keeps secondary panels collapsed, with tools available beside the canvas or in compact sheets. The standard edition's free plans allow twelve new features; existing larger plans remain editable and exportable.
 
 The optional account service supports verified App Store unlocks, prepaid credit, encrypted provider-key storage and interrupted-render recovery. Managed rendering is disabled until funding and provider pricing are configured. Apple on-device assistance checks runtime availability; an explicit loopback adapter supports compatible local text models. OpenAI and compatible providers can supply images, while Anthropic supplies text assistance. Real purchases and provider generation still require release verification.
+
+The separate [Apple-only edition](docs/apple-only.md) excludes cloud accounts, credits, ads and non-Apple model adapters from its build. It uses Foundation Models, Vision and Image Playground alongside the same local editor. Apple may process image requests through Private Cloud Compute; Apple-only is not a promise that every operation is offline. Build it with `bash scripts/apple-verify.sh apple-only`.
 
 ## Build locally
 
@@ -20,7 +22,7 @@ npm ci --prefix gateway
 bash scripts/verify.sh full
 ```
 
-The full verifier checks publication rules, the Rust engine, the gateway and both Apple targets. It performs unsigned/ad-hoc local verification; it does not deploy or upload. Native builds run serially. On the shared development Mac, they use the installed diskcleaner guard; other Macs receive a free-space check.
+The full verifier checks publication rules, the Rust engine, the gateway and both app editions on Mac and iOS Simulator. It performs unsigned/ad-hoc local verification; it does not deploy or upload. Native builds run serially. On the shared development Mac, they use the installed diskcleaner guard; other Macs receive a free-space check.
 
 For a focused change, use `bash scripts/verify.sh core`, `gateway`, `apple` or `privacy`. See the [native workspace guide](apple/README.md), [gateway contract](gateway/API.md) and [release procedure](docs/release.md). Account origins and signing configuration must be supplied deliberately for distribution; local editing works without cloud configuration.
 

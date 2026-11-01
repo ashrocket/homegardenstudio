@@ -12,6 +12,16 @@ Provide 2D plan, isometric and actual 3D views. Make local views and cloud photo
 
 ## AI and key custody
 
+### Apple-only edition
+
+Provide a separate native macOS and iOS/iPadOS development edition, built as `HomeGardenStudioApple`, that uses only Apple AI frameworks. Its compiled sources exclude the cloud gateway client, key custody, StoreKit credit purchases, sponsor features and third-party or loopback model adapters. Do not substitute an external model when Apple Intelligence is unavailable.
+
+Keep the complete local editor, photo/file and explicit URL imports, portable plans, 2D/isometric/RealityKit views, on-device Foundation Models suggestions, Vision analysis and Apple Image Playground concept images. Apple-only does not mean entirely offline: URL imports contact the chosen website, and Apple may process Image Playground requests using Private Cloud Compute. Explain this before generation. Permit only Apple image styles, never Image Playground's external-provider option. Apple manages capability and image-generation limits; do not promise unlimited inference, exact scene fidelity or universally available photorealism.
+
+This development edition has no cloud account, rendering balance, ads or purchase flow. It has no application-imposed feature cap. Its future App Store pricing and entitlement policy are not set by this build; the approved prices below remain the standard edition's contract. Source, local builds, device AI acceptance and signed distribution remain separate verification gates. (Owner requested 2026-11-01.)
+
+### Standard edition
+
 Use deterministic code and native/local inference first. Detect Apple Intelligence availability at runtime; support other local model adapters where feasible without pretending unavailable capabilities work. Do not download large model weights without an explicit user action.
 
 Offer prepaid managed OpenAI rendering and bring-your-own-provider URL/key. Recognize OpenAI and Anthropic credentials with explicit provider confirmation before testing or transmitting them. Use provider-specific protocols and honest capability labels. Anthropic is not a direct image-generation endpoint. Custom compatible providers require deliberate endpoint selection. Never send a credential to a guessed host.
