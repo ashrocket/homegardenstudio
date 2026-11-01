@@ -2,7 +2,7 @@ import { authenticate, createAccount, rateLimit, DELETION_RECEIPT_TTL_MS } from 
 import { listKeyMetas, putKey, deleteKey, loadSecret, rotateKeys, isProvider } from "./custody";
 import { HttpError, errorResponse, json, noContent } from "./errors";
 import { getBalances, getEntitlements, monthSpent } from "./ledger";
-import { creditProducts, entitlementEnvironment, postNotification, postTransaction, releasePending } from "./storekit";
+import { creditOffers, entitlementEnvironment, postNotification, postTransaction, releasePending } from "./storekit";
 import { testProviderKey, anthropicText, chatText, openaiTarget, customTarget } from "./providers";
 import { models, quote, submitJob, jobResponse, acknowledge, recoverJobs, refundJob } from "./render";
 import { createWindow, offers, settleWindows, sponsorAction } from "./sponsors";
@@ -18,7 +18,7 @@ async function me(ctx:AuthedCtx):Promise<Response> {
   const [balances,entitlements,keys,spent]=await Promise.all([getBalances(ctx.env.DB,ctx.accountId),getEntitlements(ctx.env.DB,ctx.accountId,entitlementEnvironment(ctx.env)),listKeyMetas(ctx.env.DB,ctx.accountId),monthSpent(ctx.env.DB,ctx.accountId,ctx.deps.now())]);
   const inventory=await offers(ctx).then(r=>r.json()) as {offers:unknown[]};
   return json({account_id:ctx.accountId,balances,entitlements,entitlement_environment:entitlementEnvironment(ctx.env),monthly_cap_micros:account?.monthly_cap_micros??null,month_spent_micros:spent,
-    managed_render:managedStatus(ctx.env),sponsorship_available:inventory.offers.length>0,keys,credit_products:Object.entries(creditProducts(ctx.env)).map(([product_id,credit_micros])=>({product_id,credit_micros})),budget_adds_credit:false});
+    managed_render:managedStatus(ctx.env),sponsorship_available:inventory.offers.length>0,keys,credit_products:creditOffers(ctx.env,ctx.deps.now()),budget_adds_credit:false});
 }
 async function assist(ctx:AuthedCtx,input:Record<string,unknown>):Promise<Response> {
   if(typeof input.provider!=="string" || !isProvider(input.provider) || !["critique","plant_ideas","describe"].includes(String(input.task)))throw new HttpError(400,"INVALID_ASSIST","Choose a provider and supported task.");

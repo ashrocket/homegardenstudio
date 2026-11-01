@@ -6,6 +6,9 @@ import type { AuthedCtx, BalanceEnvironment, Ctx, Env } from "./types";
 import { fromBase64, fromBase64Url, isGuardFailure, isInt, isUuid } from "./util";
 
 export const PRODUCT_PREFIX = "com.ashleyraiteri.homegardenstudio.";
+export const CREDIT_PACK_ID = PRODUCT_PREFIX + "credit.usd15";
+export const CREDIT_PACK_MICROS = 15_000_000;
+export const CREDIT_OFFER_DURATION_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** Apple's marker extensions: the leaf carries ...6.11.1 and the intermediate ...6.2.1. */
 const OID_LEAF = "1.2.840.113635.100.6.11.1";
@@ -18,7 +21,9 @@ interface ProductDef {
   enabledBy?: "ENABLE_MAC_UPGRADE";
 }
 
+// Lifetime receipt definitions. Storefront visibility must never change a paid transaction's grant.
 const PRODUCTS = new Map<string, ProductDef>([
+  ["credit.usd15", { credit: CREDIT_PACK_MICROS }],
   ["unlock.ios", { credit: 2_000_000 }],
   ["unlock.mac", { credit: 2_000_000 }],
   ["unlock.bundle", { credit: 5_000_000 }],
@@ -137,20 +142,28 @@ export interface TxClaims {
 export function entitlementEnvironment(env: Env): BalanceEnvironment {
   return env.ENTITLEMENT_ENVIRONMENT === "sandbox" ? "sandbox" : "production";
 }
-export function creditProducts(env: Env): Record<string, number> {
-  try {
-    const data: unknown = JSON.parse(env.CREDIT_PRODUCTS || "{}");
-    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error();
-    for (const [id, credit] of Object.entries(data)) {
-      if (!id.startsWith(PRODUCT_PREFIX + "credit.") || !/^[\w.]{1,180}$/.test(id) || !isInt(credit) || credit <= 0 || credit > 500_000_000) throw new Error();
-    }
-    return data as Record<string, number>;
-  } catch { throw new HttpError(503, "PRODUCT_CONFIGURATION_INVALID", "Credit products are unavailable."); }
+export interface CreditOffer {
+  product_id: string;
+  credit_micros: number;
+  offer_starts_at: number;
+  offer_ends_at: number;
+  credit_expires: false;
+}
+function utcTimestamp(value: string | undefined): number | null {
+  if(!value || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return null;
+  const timestamp=Date.parse(value);
+  const canonical=value.includes(".") ? value : value.replace("Z",".000Z");
+  return Number.isSafeInteger(timestamp) && timestamp>0 && new Date(timestamp).toISOString()===canonical ? timestamp : null;
+}
+/** Merchandising only: explicit UTC [start,end), exactly 90 days. Never used to verify or grant receipts. */
+export function creditOffers(env: Env, now: number): CreditOffer[] {
+  const starts=utcTimestamp(env.CREDIT_OFFER_START_UTC),ends=utcTimestamp(env.CREDIT_OFFER_END_UTC);
+  if(starts===null || ends===null || ends-starts!==CREDIT_OFFER_DURATION_MS || !Number.isSafeInteger(now) || now<starts || now>=ends) return [];
+  return [{product_id:CREDIT_PACK_ID,credit_micros:CREDIT_PACK_MICROS,offer_starts_at:starts,offer_ends_at:ends,credit_expires:false}];
 }
 function product(env: Env, id: string): { short: string; def: ProductDef } {
   const short = id.startsWith(PRODUCT_PREFIX) ? id.slice(PRODUCT_PREFIX.length) : "";
-  const pack = creditProducts(env)[id];
-  const def = PRODUCTS.get(short) ?? (pack ? { credit: pack } : undefined);
+  const def = PRODUCTS.get(short);
   if (!def) throw new HttpError(400, "UNKNOWN_PRODUCT", "That product is not configured for this app.");
   if (def.enabledBy && env[def.enabledBy] !== "true") throw new HttpError(400, "PRODUCT_DISABLED", "That product is unavailable.");
   return { short, def };

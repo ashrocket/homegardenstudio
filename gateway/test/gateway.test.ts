@@ -9,7 +9,7 @@ import { encryptSecret, decryptSecret, getKeyRow, putKey } from "../src/custody"
 import { boundedJson } from "../src/bounded";
 import { testProviderKey } from "../src/providers";
 import { validateCustomEndpoint, upstreamFetch } from "../src/ssrf";
-import { reconcileVerified, PRODUCT_PREFIX, verifyAppleJws, releasePending, type TxClaims } from "../src/storekit";
+import { reconcileVerified, PRODUCT_PREFIX, verifyAppleJws, releasePending, CREDIT_PACK_ID, CREDIT_PACK_MICROS, CREDIT_OFFER_DURATION_MS, type TxClaims } from "../src/storekit";
 import { refundJob } from "../src/render";
 import { settleWindows } from "../src/sponsors";
 import type { Ctx, Deps, Env } from "../src/types";
@@ -249,18 +249,89 @@ describe("purchase state convergence",()=>{
     await reconcileVerified(ctx,{...claims,signedDate:now+2},null,"reverse-after-render");
     expect((await getBalances(env.DB,account.account_id)).production).toBe(2_000_000);
   });
-  it("rejects ambiguous equally signed states and grants only configured consumables",async()=>{
+  it("rejects ambiguous equally signed states and grants only permanent known consumables",async()=>{
     const h=harness(),{ctx,account,claims}=await purchaseContext(h);
     await reconcileVerified(ctx,claims,account.account_id);
     await expect(reconcileVerified(ctx,{...claims,revocationDate:now},null)).rejects.toThrow("Conflicting");
     const credit={...claims,transactionId:"c",originalTransactionId:"c",productId:PRODUCT_PREFIX+"credit.fixture"};
     await expect(reconcileVerified(ctx,credit,account.account_id)).rejects.toThrow("not configured");
-    h.env.CREDIT_PRODUCTS=JSON.stringify({[credit.productId]:1234});
-    await reconcileVerified(ctx,credit,account.account_id);await reconcileVerified(ctx,credit,account.account_id);
-    expect((await getBalances(env.DB,account.account_id)).production).toBe(2_001_234);
-    h.env.CREDIT_PRODUCTS="{}";
-    await reconcileVerified(ctx,{...credit,signedDate:now+1,revocationDate:now+1},null,"disabled-pack-refund");
+    const known={...credit,productId:CREDIT_PACK_ID};
+    await reconcileVerified(ctx,known,account.account_id);await reconcileVerified(ctx,known,account.account_id);
+    expect((await getBalances(env.DB,account.account_id)).production).toBe(17_000_000);
+    await reconcileVerified(ctx,{...known,signedDate:now+1,revocationDate:now+1},null,"unlisted-pack-refund");
     expect((await getBalances(env.DB,account.account_id)).production).toBe(2_000_000);
+  });
+});
+
+describe("90-day credit offer and permanent purchased credit",()=>{
+  it("lists the exact nonexpiring credit offer only during the configured UTC interval",async()=>{
+    const h=harness(),a=await h.account();
+    const start=now+1000,end=start+CREDIT_OFFER_DURATION_MS;
+    h.env.CREDIT_OFFER_START_UTC=new Date(start).toISOString();
+    h.env.CREDIT_OFFER_END_UTC=new Date(end).toISOString();
+    const catalog=async()=>{
+      const response=await h.call("/v1/me","GET",undefined,a.secret);expect(response.status).toBe(200);
+      return (await response.json() as {credit_products:unknown[]}).credit_products;
+    };
+    h.advance(999);expect(await catalog()).toEqual([]); // before start
+    h.advance(1);expect(await catalog()).toEqual([{product_id:CREDIT_PACK_ID,credit_micros:CREDIT_PACK_MICROS,
+      offer_starts_at:start,offer_ends_at:end,credit_expires:false}]); // inclusive start
+    h.advance(CREDIT_OFFER_DURATION_MS-1);expect(await catalog()).toHaveLength(1); // before end
+    h.advance(1);expect(await catalog()).toEqual([]); // exclusive end
+    expect(h.calls).not.toHaveBeenCalled();expect(await count("ledger")).toBe(0);
+  });
+  it("fails catalog visibility closed for missing, malformed, non-UTC or non-90-day activation",async()=>{
+    const h=harness(),a=await h.account();
+    const start=new Date(now).toISOString(),end=new Date(now+CREDIT_OFFER_DURATION_MS).toISOString();
+    const windows=[['',''],[start,''],['',end],['2026-02-30T12:00:00Z',end],
+      [start.replace('Z','+00:00'),end],[start+' ',end],['launch',end],
+      [start,new Date(now+CREDIT_OFFER_DURATION_MS-1).toISOString()],
+      [start,new Date(now+CREDIT_OFFER_DURATION_MS+1).toISOString()],[end,start]];
+    for(const [starts,ends] of windows) {
+      h.env.CREDIT_OFFER_START_UTC=starts!;h.env.CREDIT_OFFER_END_UTC=ends!;
+      const response=await h.call("/v1/me","GET",undefined,a.secret);expect(response.status).toBe(200);
+      expect((await response.json() as {credit_products:unknown[]}).credit_products).toEqual([]);
+    }
+    expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("honors first verified acceptance and replay after the storefront offer ends without expiring credit",async()=>{
+    const h=harness(),{ctx,account,claims}=await purchaseContext(h);
+    const end=now+CREDIT_OFFER_DURATION_MS;
+    h.env.CREDIT_OFFER_START_UTC=new Date(now).toISOString();h.env.CREDIT_OFFER_END_UTC=new Date(end).toISOString();
+    const credit={...claims,productId:CREDIT_PACK_ID,purchaseDate:end-1,signedDate:end};
+    h.advance(CREDIT_OFFER_DURATION_MS); // An in-flight Apple purchase arrives after catalog removal.
+    await reconcileVerified(ctx,credit,account.account_id);await reconcileVerified(ctx,credit,account.account_id);
+    expect((await getBalances(env.DB,account.account_id)).production).toBe(CREDIT_PACK_MICROS);
+    expect(await count("ledger")).toBe(1);
+    h.env.CREDIT_OFFER_START_UTC="";h.env.CREDIT_OFFER_END_UTC="";
+    h.advance(365*86400000);await maintenance(h.env,h.deps);await reconcileVerified(ctx,credit,account.account_id);
+    expect((await getBalances(env.DB,account.account_id)).production).toBe(CREDIT_PACK_MICROS);
+    expect(await count("ledger")).toBe(1);
+    const me=await (await h.call("/v1/me","GET",undefined,account.secret)).json() as {credit_products:unknown[]};
+    expect(me.credit_products).toEqual([]);
+    // Genuine purchases remain owed even if an App Store removal race leaves the SKU purchasable late.
+    await reconcileVerified(ctx,{...credit,transactionId:"late",originalTransactionId:"late",purchaseDate:end+1,signedDate:end+1},account.account_id);
+    expect((await getBalances(env.DB,account.account_id)).production).toBe(2*CREDIT_PACK_MICROS);
+    expect(await count("ledger")).toBe(2);expect(h.calls).not.toHaveBeenCalled();
+  });
+  it("repairs an interrupted credit grant after the promotion closes and never grants an unlock",async()=>{
+    const h=harness(),{ctx,account,claims}=await purchaseContext(h);
+    const credit={...claims,productId:CREDIT_PACK_ID};
+    h.env.CREDIT_OFFER_START_UTC=new Date(now).toISOString();h.env.CREDIT_OFFER_END_UTC=new Date(now+CREDIT_OFFER_DURATION_MS).toISOString();
+    const original=h.env.DB;let pause=true;
+    h.env.DB=new Proxy(original,{get(target,key){
+      if(key==="prepare")return (sql:string)=>{
+        if(pause && sql.startsWith("SELECT * FROM transactions WHERE account_id=")){pause=false;throw new Error("Synthetic grant interruption");}
+        return target.prepare(sql);
+      };
+      const value=Reflect.get(target,key,target);return typeof value==="function"?value.bind(target):value;
+    }});
+    await expect(reconcileVerified(ctx,credit,account.account_id)).rejects.toThrow("Synthetic grant interruption");
+    h.env.DB=original;h.advance(CREDIT_OFFER_DURATION_MS+1);
+    await maintenance(h.env,h.deps);await reconcileVerified(ctx,credit,account.account_id);
+    expect((await getBalances(env.DB,account.account_id)).production).toBe(CREDIT_PACK_MICROS);
+    expect(await count("ledger")).toBe(1);
+    expect(await getEntitlements(env.DB,account.account_id,"production")).toEqual({ios:false,macos:false,bundle:false});
   });
 });
 

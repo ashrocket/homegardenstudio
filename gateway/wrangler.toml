@@ -34,8 +34,11 @@ KEK_CURRENT_VERSION = "1"
 
 # A separate QA deployment may select sandbox; clients cannot select entitlement scope.
 ENTITLEMENT_ENVIRONMENT = "production"
-# Explicitly configured StoreKit consumable product IDs mapped to micro-USD grants.
-CREDIT_PRODUCTS = "{}"
+# Permanent receipt definition: credit.usd15 grants 15,000,000 micro-USD; purchased credit never expires.
+# The US$10 promotion is visible only in an explicitly configured exact 90-day UTC interval.
+# Leave both unset until the owner activates the offer and App Store availability is ready.
+CREDIT_OFFER_START_UTC = ""
+CREDIT_OFFER_END_UTC = ""
 
 [triggers]
 crons = ["*/10 * * * *"]
