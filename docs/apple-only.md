@@ -18,7 +18,7 @@ Use the repository's documented Rust, Xcode and XcodeGen prerequisites. From the
 bash scripts/apple-verify.sh apple-only
 ```
 
-This builds the shared core, generates the Xcode project, runs the Apple-only Mac tests, compiles for the iOS Simulator, and checks actual compiler inputs and both built bundles for excluded cloud components. It uses one build job at a time and does not open the app, start a simulator, call an AI provider or upload a build.
+This builds the shared core, generates the Xcode project, runs the Apple-only Mac tests, compiles for the iOS Simulator, and checks actual compiler inputs and both built bundles for excluded cloud components. It uses one build job at a time. The Mac tests launch the application as their test host; this is not an interactive editor walkthrough. The script does not boot an iOS Simulator, call an AI provider or upload a build.
 
 The Xcode scheme is `HomeGardenStudioApple`. Its application identifier is `com.ashleyraiteri.homegardenstudio.appleonly`, so it can coexist with the standard app. Local build products are under `apple/build/DerivedData/Build/Products/`; the Mac product is `Debug/HomeGardenStudioApple.app`. A simulator build cannot be installed on a physical iPhone.
 
