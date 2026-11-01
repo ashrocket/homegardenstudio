@@ -113,3 +113,5 @@ jobs:
             .coordination/native-uiqa/*/summary.json
             .coordination/native-uiqa/*/receipt.json
             .coordination/native-uiqa/*/identity.json
+            .coordination/native-uiqa/*/last-screen.png
+            .coordination/native-uiqa/*/lifecycle.json
