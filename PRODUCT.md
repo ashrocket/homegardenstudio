@@ -25,7 +25,7 @@ Store customer keys securely on Cloudflare: authenticated per-user custody, encr
 - macOS unlock: US $3.99, including $2 of rendering credit.
 - Both-platform bundle: US $4.99, including $5 of rendering credit.
 - iOS-to-bundle upgrade: US $3.00, including $5 of rendering credit. Require verified ownership of the iOS unlock.
-- Proposed fair macOS-to-bundle upgrade: US $1.00, crediting the solo price toward the bundle. Confirm its exact product configuration before public pricing claims; the owner explicitly confirmed only the iOS upgrade price.
+- macOS-to-bundle upgrade: US $0.99, including $5 of rendering credit. Require verified ownership of the macOS unlock. (Owner confirmed 2026-11-01.)
 
 Verify StoreKit purchases server-side, bind entitlements to the customer, and grant each qualifying transaction's credit exactly once. Restore must not mint credit again. Refunds/revocations must be handled. The owner clarified that solo purchases receive $2, while bundle or paid bundle upgrades receive $5. The earlier suggestion of 5/10 starter renders is superseded.
 

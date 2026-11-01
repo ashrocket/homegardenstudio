@@ -56,7 +56,7 @@ Product IDs (prefix `com.ashleyraiteri.homegardenstudio.`):
 | `unlock.mac` | non-consumable | $3.99 | 2_000_000 | `macos` |
 | `unlock.bundle` | non-consumable | $4.99 | 5_000_000 | `ios`,`macos`,`bundle` |
 | `upgrade.ios_to_bundle` | non-consumable | $3.00 | 5_000_000 | `ios`,`macos`,`bundle`; **requires** a verified, unrevoked `unlock.ios` on the same account |
-| `upgrade.mac_to_bundle` | non-consumable | $1.00 | 5_000_000 | same; requires `unlock.mac`. **Disabled** (`ENABLE_MAC_UPGRADE` var false) until the owner confirms. |
+| `upgrade.mac_to_bundle` | non-consumable | $0.99 | 5_000_000 | same; requires a verified, unrevoked `unlock.mac` on the same account. Owner-confirmed 2026-11-01. `ENABLE_MAC_UPGRADE` (default `"true"`) can switch it off. |
 
 Non-consumables sync across platforms under universal purchase. That's why `unlock.ios` grants only the `ios` entitlement; the app honours it only on iOS and iPadOS.
 
