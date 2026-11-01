@@ -4,7 +4,14 @@ import Combine
 import CryptoKit
 import ImageIO
 
-extension UTType { nonisolated static let gardenPlan = UTType(exportedAs: "com.ashleyraiteri.homegardenstudio.plan", conformingTo: .package) }
+extension UTType {
+    #if HGS_APPLE_ONLY
+    // This edition imports the shared format declared by the standard app.
+    nonisolated static var gardenPlan: UTType { UTType(importedAs: "com.ashleyraiteri.homegardenstudio.plan", conformingTo: .package) }
+    #else
+    nonisolated static let gardenPlan = UTType(exportedAs: "com.ashleyraiteri.homegardenstudio.plan", conformingTo: .package)
+    #endif
+}
 
 /// FileDocument snapshots may run off the main actor. Only immutable, locked byte snapshots cross that boundary.
 nonisolated final class PlanDocument: ReferenceFileDocument, @unchecked Sendable {
