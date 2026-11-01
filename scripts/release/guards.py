@@ -2,6 +2,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import re
+import ipaddress
+from urllib.parse import urlsplit
 
 BUNDLE = "com.ashleyraiteri.homegardenstudio"
 TEAM = "6P24N3R4TP"
@@ -35,6 +37,32 @@ def number_tuple(value):
     return parts + (0,) * (3-len(parts))
 
 
+def gateway_origin(value):
+    """Validate before URL parsing can discard controls; return the native canonical origin."""
+    message = "Set explicit, distinct canonical HTTPS production and sandbox gateway origins"
+    require(isinstance(value, str) and 0 < len(value) <= 2048, message)
+    require(all(33 <= ord(c) < 127 for c in value) and value.startswith("https://") and
+            not any(c in value for c in ("?", "#", "%", "\\", "$", "{", "}", "<", ">")), message)
+    try:
+        parts = urlsplit(value)
+        host, port = parts.hostname, parts.port
+        require(parts.scheme == "https" and host and parts.username is None and parts.password is None and
+                parts.path in ("", "/") and not parts.query and not parts.fragment and port in (None, 443), message)
+        if ":" in host:
+            canonical_host = "[" + ipaddress.IPv6Address(host).compressed + "]"
+        else:
+            require(len(host) <= 253 and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                           for label in host.split(".")), message)
+            require(not any(label in ("placeholder", "replace-me", "change-me", "your-gateway", "todo")
+                            for label in host.split(".")), message)
+            canonical_host = host
+        # urlsplit lowercases hostnames, so compare authority to reject case folding or hidden syntax.
+        require(parts.netloc in (canonical_host, canonical_host + ":443"), message)
+        return "https://" + canonical_host
+    except (ValueError, UnicodeError) as error:
+        raise ReleaseError(message) from error
+
+
 @dataclass(frozen=True)
 class Config:
     platform: str
@@ -44,6 +72,20 @@ class Config:
     group: str | None
     tester: str | None
     override: str | None
+    production_gateway: str
+    sandbox_gateway: str
+
+    def __post_init__(self):
+        production = gateway_origin(self.production_gateway)
+        sandbox = gateway_origin(self.sandbox_gateway)
+        require(production != sandbox, "Production and sandbox gateway origins must differ")
+        object.__setattr__(self, "production_gateway", production)
+        object.__setattr__(self, "sandbox_gateway", sandbox)
+
+    def validate_gateways(self):
+        require(gateway_origin(self.production_gateway) == self.production_gateway and
+                gateway_origin(self.sandbox_gateway) == self.sandbox_gateway and
+                self.production_gateway != self.sandbox_gateway, "Invalid release gateway configuration")
 
     @property
     def asc_platform(self):
@@ -72,7 +114,8 @@ class Config:
         override = env.get("HGS_BUILD_NUMBER")
         if override is not None:
             override = build_number(override)
-        return cls(argv[0], argv[1], app, version, group, tester, override)
+        return cls(argv[0], argv[1], app, version, group, tester, override,
+                   env.get("HGS_PRODUCTION_GATEWAY_URL"), env.get("HGS_SANDBOX_GATEWAY_URL"))
 
 
 def resource(response, kind, expected_id=None):

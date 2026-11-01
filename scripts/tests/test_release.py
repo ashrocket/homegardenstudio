@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -26,6 +27,8 @@ BUILD = "33333333-3333-3333-3333-333333333333"
 VERSION = "44444444-4444-4444-4444-444444444444"
 DETAIL = "55555555-5555-5555-5555-555555555555"
 COMMIT = "a" * 40
+PRODUCTION = "https://production.example.com"
+SANDBOX = "https://sandbox.example.com"
 
 
 def item(kind, ident, **attrs):
@@ -36,12 +39,13 @@ def relation(kind, ident):
     return {"data": {"type": kind, "id": ident}}
 
 
-def config(mode="internal", **changes):
-    env = {"HGS_APP_ID": APP, "HGS_VERSION": "1.0.0"}
+def config(mode="internal", platform="ios", **changes):
+    env = {"HGS_APP_ID": APP, "HGS_VERSION": "1.0.0",
+           "HGS_PRODUCTION_GATEWAY_URL": PRODUCTION, "HGS_SANDBOX_GATEWAY_URL": SANDBOX}
     if mode == "internal":
         env.update(HGS_GROUP=GROUP, HGS_TESTER_ID=TESTER)
     env.update(changes)
-    return guards.Config.parse(["ios", mode], env)
+    return guards.Config.parse([platform, mode], env)
 
 
 class FakeRunner:
@@ -57,6 +61,7 @@ class FakeRunner:
         self.artifact_count = 1
         self.archive_changes = {}
         self.archive_platform = "iPhoneOS"
+        self.app_info_changes = {}
 
     def run(self, args, cwd):
         args = tuple(str(v) for v in args)
@@ -78,13 +83,20 @@ class FakeRunner:
                 (archive / "Info.plist").write_bytes(plistlib.dumps({"ApplicationProperties": properties}))
                 app = archive / "Products/Applications/HomeGardenStudio.app"
                 app.mkdir(parents=True)
-                (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleSupportedPlatforms": [self.archive_platform]}))
+                app_info = {"CFBundleSupportedPlatforms": [self.archive_platform],
+                            "HGSProductionGatewayURL": PRODUCTION, "HGSSandboxGatewayURL": SANDBOX}
+                app_info.update(self.app_info_changes)
+                app_info = {k: v for k, v in app_info.items() if v is not None}
+                if self.archive_platform == "MacOSX":
+                    app = app / "Contents"
+                    app.mkdir()
+                (app / "Info.plist").write_bytes(plistlib.dumps(app_info))
             else:
                 export = Path(args[args.index("-exportPath") + 1])
                 export.mkdir()
                 if not self.omit_artifact:
                     for n in range(self.artifact_count):
-                        (export / ("Synthetic app " + str(n) + ".ipa")).write_bytes(b"synthetic artifact")
+                        (export / ("Synthetic app " + str(n) + (".pkg" if self.archive_platform == "MacOSX" else ".ipa"))).write_bytes(b"synthetic artifact")
             return b""
         if args[0] != "asc":
             return b""
@@ -111,7 +123,7 @@ class FakeRunner:
             build["relationships"] = {"app": relation("apps", APP), "preReleaseVersion": relation("preReleaseVersions", VERSION),
                 "buildBetaDetail": relation("buildBetaDetails", DETAIL),
                 "betaGroups": {"data": [{"type": "betaGroups", "id": GROUP}] if self.assigned else []}}
-            response = {"data": build, "included": [item("preReleaseVersions", VERSION, version="1.0.0", platform="IOS"),
+            response = {"data": build, "included": [item("preReleaseVersions", VERSION, version="1.0.0", platform="MAC_OS" if self.archive_platform == "MacOSX" else "IOS"),
                        item("buildBetaDetails", DETAIL, internalBuildState="IN_BETA_TESTING" if self.assigned else "READY_FOR_BETA_TESTING")]}
         else:
             raise AssertionError("Unexpected synthetic CLI call")
@@ -146,6 +158,88 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(guards.ReleaseError):
             config("upload-only", HGS_GROUP=GROUP)
         self.assertEqual(self.fake.calls, [])
+
+    def test_gateway_configuration_rejects_unsafe_values_before_any_command(self):
+        invalid = [None, "", "http://production.example.com", "https://user:secret@production.example.com",
+                   "https://production.example.com/path", "https://production.example.com?", "https://production.example.com#",
+                   "https://production.example.com:444", "https://production.example.com:",
+                   "https://Production.example.com", "https://production.example.com.", "https://bad_host.example.com",
+                   "https://-bad.example.com", "https://production.example.com\n", " https://production.example.com",
+                   "https://production.example.com\t", "https://production.example.com\x7f",
+                   "https://production.example.com/%2F", "https://production.example.com\\evil",
+                   "$(HGS_GATEWAY_URL)", "https://${GATEWAY_HOST}", "https://<gateway>", "https://placeholder",
+                   "https://éxample.com", "https://[broken", "https://production.example.com:999999"]
+        for field in ("HGS_PRODUCTION_GATEWAY_URL", "HGS_SANDBOX_GATEWAY_URL"):
+            for value in invalid:
+                with self.subTest(field=field, value=repr(value)), self.assertRaises(guards.ReleaseError):
+                    config(**{field: value})
+        self.assertEqual(self.fake.calls, [])
+
+    def test_gateway_canonicalization_and_environment_separation(self):
+        cfg = config(HGS_PRODUCTION_GATEWAY_URL=PRODUCTION + ":443/", HGS_SANDBOX_GATEWAY_URL=SANDBOX + "/")
+        self.assertEqual((cfg.production_gateway, cfg.sandbox_gateway), (PRODUCTION, SANDBOX))
+        for duplicate in (PRODUCTION, PRODUCTION + "/", PRODUCTION + ":443", PRODUCTION + ":443/"):
+            with self.subTest(duplicate=duplicate), self.assertRaises(guards.ReleaseError):
+                config(HGS_SANDBOX_GATEWAY_URL=duplicate)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_gateway_config_stops_main_before_runner(self):
+        env = {"HGS_APP_ID": APP, "HGS_VERSION": "1.0.0"}
+        for field in (None, "HGS_PRODUCTION_GATEWAY_URL", "HGS_SANDBOX_GATEWAY_URL"):
+            candidate = dict(env)
+            if field: candidate[field] = PRODUCTION
+            with self.subTest(field=field), patch.dict(driver.os.environ, candidate, clear=True), \
+                 patch.object(driver.sys, "argv", ["testflight.py", "ios", "upload-only"]), \
+                 patch.object(driver, "Release") as release, patch("sys.stderr"):
+                self.assertEqual(driver.main(), 1)
+                release.assert_not_called()
+
+    def test_gateway_config_rechecked_before_execute_side_effects(self):
+        cfg = config()
+        object.__setattr__(cfg, "sandbox_gateway", PRODUCTION)
+        with self.assertRaises(guards.ReleaseError): self.release(cfg).execute()
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse((self.root / ".coordination").exists())
+
+    def test_archive_gateway_mismatch_blocks_export_on_both_platforms(self):
+        changes = [{"HGSProductionGatewayURL": None}, {"HGSSandboxGatewayURL": None},
+                   {"HGSProductionGatewayURL": ""}, {"HGSSandboxGatewayURL": "$(HGS_SANDBOX_GATEWAY_URL)"},
+                   {"HGSProductionGatewayURL": SANDBOX, "HGSSandboxGatewayURL": PRODUCTION},
+                   {"HGSProductionGatewayURL": PRODUCTION + "/"}, {"HGSSandboxGatewayURL": "https://other.example.com"}]
+        for platform in ("ios", "macos"):
+            for change in changes:
+                with self.subTest(platform=platform, change=change):
+                    self.fake.calls.clear()
+                    self.fake.archive_platform = "MacOSX" if platform == "macos" else "iPhoneOS"
+                    self.fake.app_info_changes = change
+                    with self.assertRaises(guards.ReleaseError): self.release(config(platform=platform)).execute()
+                    self.no_upload()
+                    self.assertFalse(any("-exportArchive" in c for c in self.fake.calls))
+
+    def test_exact_gateway_settings_and_serial_swift_driver_in_archive_and_receipt(self):
+        for platform in ("ios", "macos"):
+            with self.subTest(platform=platform):
+                self.fake.archive_platform = "MacOSX" if platform == "macos" else "iPhoneOS"
+                self.fake.calls.clear()
+                release = self.release(config("upload-only", platform=platform))
+                release.execute()
+                archive = next(c for c in self.fake.calls if c[0] == "xcodebuild" and "archive" in c)
+                self.assertIn("HGS_PRODUCTION_GATEWAY_URL=" + PRODUCTION, archive)
+                self.assertIn("HGS_SANDBOX_GATEWAY_URL=" + SANDBOX, archive)
+                self.assertIn("OTHER_SWIFT_FLAGS=$(inherited) -driver-batch-count 1", archive)
+                self.assertFalse(any("-j1" in a for a in archive))
+                receipt = json.loads((release.directory / "release.json").read_text())
+                self.assertEqual(receipt["gatewayOrigins"], {"production": PRODUCTION, "sandbox": SANDBOX})
+
+    def test_runner_disables_diskcleaner_tui_only_in_child_environment(self):
+        result = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+        with patch.dict(os.environ, {"DISKCLEANER_TUI": "1", "HGS_SYNTHETIC_PARENT": "preserved"}), \
+             patch.object(driver.subprocess, "run", return_value=result) as run:
+            driver.Runner().run(["fake"], self.root)
+            child = run.call_args.kwargs["env"]
+            self.assertEqual(child["DISKCLEANER_TUI"], "0")
+            self.assertEqual(child["HGS_SYNTHETIC_PARENT"], "preserved")
+            self.assertEqual(os.environ["DISKCLEANER_TUI"], "1")
 
     def test_dirty_source_rejected_before_remote_or_build(self):
         self.fake.dirty = True

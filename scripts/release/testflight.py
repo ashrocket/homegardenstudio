@@ -17,7 +17,7 @@ class Runner:
     def run(self, args, cwd, timeout=3600):
         try:
             result = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True,
-                                    timeout=timeout, check=False)
+                                    timeout=timeout, check=False, env={**os.environ, "DISKCLEANER_TUI": "0"})
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ReleaseError("Release command failed or timed out; retained evidence requires review before retry") from error
         require(result.returncode == 0, "Release command failed; raw command output was withheld")
@@ -87,6 +87,7 @@ class Release:
 
     def execute(self):
         cfg = self.cfg
+        cfg.validate_gateways()
         self.reject_unresolved_uploads()
         commit = self.clean_source()
         # All remote calls before full verification are read-only identity/configuration gates.
@@ -101,7 +102,8 @@ class Release:
         self.evidence = {"schema": 1, "sourceCommit": commit, "appId": cfg.app, "bundleId": BUNDLE,
                          "teamId": TEAM, "platform": cfg.asc_platform, "version": cfg.version,
                          "buildNumber": number, "mode": cfg.mode, "groupId": cfg.group,
-                         "testerId": cfg.tester, "installedOnDevice": "not_verified"}
+                         "testerId": cfg.tester, "installedOnDevice": "not_verified",
+                         "gatewayOrigins": {"production": cfg.production_gateway, "sandbox": cfg.sandbox_gateway}}
         self.phase("preflight_passed")
         self.run(Path.home() / "ashcode/diskcleaner/bin/diskcleaner", "check")
         self.phase("full_verification_started")
@@ -117,7 +119,9 @@ class Release:
         self.run("xcodebuild", "-project", "HomeGardenStudio.xcodeproj", "-scheme", "HomeGardenStudio",
                  "-configuration", "Release", "-jobs", "1", "-destination", destination, "-archivePath", archive,
                  "-derivedDataPath", self.directory / "derived", "CODE_SIGN_STYLE=Manual",
-                 "OTHER_SWIFT_FLAGS=$(inherited) -j1",
+                 "OTHER_SWIFT_FLAGS=$(inherited) -driver-batch-count 1",
+                 "HGS_PRODUCTION_GATEWAY_URL=" + cfg.production_gateway,
+                 "HGS_SANDBOX_GATEWAY_URL=" + cfg.sandbox_gateway,
                  "CODE_SIGN_IDENTITY=Apple Distribution", "DEVELOPMENT_TEAM=" + TEAM,
                  "PROVISIONING_PROFILE_SPECIFIER=" + profile, "CURRENT_PROJECT_VERSION=" + number,
                  "MARKETING_VERSION=" + cfg.version, "archive", cwd=apple)
@@ -146,6 +150,9 @@ class Release:
         supported = "iPhoneOS" if cfg.platform == "ios" else "MacOSX"
         require(isinstance(app_properties, dict) and app_properties.get("CFBundleSupportedPlatforms") == [supported],
                 "Archived application platform does not match release platform")
+        require(app_properties.get("HGSProductionGatewayURL") == cfg.production_gateway and
+                app_properties.get("HGSSandboxGatewayURL") == cfg.sandbox_gateway,
+                "Archived gateway origins do not exactly match the release configuration")
         self.phase("archived", archive=str(archive.relative_to(self.root)))
         export = self.directory / "export"
         self.phase("export_started")
