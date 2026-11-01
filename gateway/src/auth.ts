@@ -5,6 +5,7 @@ import { randomBytes, sha256Hex, toBase64Url } from "./util";
 const SECRET_RE = /^hgs_[A-Za-z0-9_-]{43}$/;
 const HOUR_MS = 60 * 60 * 1000;
 export const ACCOUNT_CREATE_PER_IP_PER_HOUR = 5;
+export const DELETION_RECEIPT_TTL_MS = 30 * 24 * HOUR_MS;
 
 /**
  * Fixed-window counter kept in D1 (a Worker has no shared memory). Throws 429 once `limit` is exceeded.
@@ -51,9 +52,17 @@ export async function authenticate(ctx: Ctx): Promise<AuthedCtx> {
   const m = /^Bearer (\S+)$/.exec(header);
   const secret = m?.[1];
   if (!secret || !SECRET_RE.test(secret)) throw unauthorized();
-  const row = await ctx.env.DB.prepare("SELECT id FROM accounts WHERE secret_hash = ?1 AND deleted_at IS NULL")
-    .bind(await sha256Hex(secret))
+  const hash = await sha256Hex(secret);
+  let row = await ctx.env.DB.prepare("SELECT id FROM accounts WHERE secret_hash = ?1 AND deleted_at IS NULL")
+    .bind(hash)
     .first<{ id: string }>();
+  // A deletion receipt is valid only for repeating the exact destructive endpoint.
+  // It never restores reads, purchases, custody or generation after revocation.
+  if (!row && ctx.request.method === "DELETE" && ctx.url.pathname === "/v1/me") {
+    row = await ctx.env.DB.prepare(`SELECT r.account_id AS id FROM account_deletion_receipts r
+      JOIN accounts a ON a.id=r.account_id WHERE r.secret_hash=?1 AND a.deleted_at IS NOT NULL
+      AND (r.completed_at IS NULL OR r.completed_at>?2)`).bind(hash, ctx.deps.now() - DELETION_RECEIPT_TTL_MS).first<{id:string}>();
+  }
   if (!row) throw unauthorized();
   return { ...ctx, accountId: row.id };
 }

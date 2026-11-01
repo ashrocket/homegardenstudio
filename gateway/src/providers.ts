@@ -52,14 +52,16 @@ export interface KeyTestResult {
   status: number;
   capabilities: { image_generation: boolean; text: boolean };
   message: string;
-  discovery?: "available" | "invalid_response";
-  generation_verified?: false;
+  discovery: "available" | "invalid_response";
+  generation_verified: false;
   advertised_image_models?: string[];
 }
 
 const rejected = (status: number): KeyTestResult => ({
   ok: false,
   status,
+  discovery: "invalid_response",
+  generation_verified: false,
   capabilities: { image_generation: false, text: false },
   message: status === 401 || status === 403 ? "The provider rejected this key." : `The provider answered with status ${status}.`,
 });

@@ -65,6 +65,15 @@ describe("D1 atomic ledger",()=>{
 });
 
 describe("custody and destination boundaries",()=>{
+  it("keeps rejected key discovery decodable without claiming capabilities",async()=>{
+    for(const provider of ["openai","anthropic"] as const)for(const status of [401,403]){
+      const h=harness(async()=>new Response(JSON.stringify({error:{message:"private upstream detail"}}),{status,headers:{"content-type":"application/json"}}));
+      const result=await testProviderKey(h.deps,h.env,provider,"sk-ant-fixture-not-real",null);
+      expect(result).toMatchObject({ok:false,status,discovery:"invalid_response",generation_verified:false,capabilities:{image_generation:false,text:false}});
+      expect(result.message).not.toContain("private upstream detail");
+      expect(h.calls).toHaveBeenCalledTimes(1);
+    }
+  });
   it("binds ciphertext to tenant, record purpose, and KEK version",async()=>{
     const h=harness(),a=await h.account(),b=await h.account();
     const encrypted=await encryptSecret(h.env,a.account_id,"openai","fixture-secret");
@@ -338,6 +347,64 @@ describe("render acceptance and recovery",()=>{
 });
 
 describe("finite sponsorship and deletion",()=>{
+  it("does not recreate an expired receipt when a previously authenticated retry resumes after maintenance",async()=>{
+    const h=harness(),a=await h.account();
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    h.advance(30*86400000-1);
+    const original=h.env.DB;
+    let pause=true;
+    h.env.DB=new Proxy(original,{get(target,key){
+      if(key==="batch")return async (statements:D1PreparedStatement[])=>{
+        if(pause){pause=false;h.advance(2);await maintenance({...h.env,DB:original},h.deps);}
+        return target.batch(statements);
+      };
+      const value=Reflect.get(target,key,target);
+      return typeof value==="function"?value.bind(target):value;
+    }});
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    h.env.DB=original;
+    expect(await count("account_deletion_receipts")).toBe(0);
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(401);
+  });
+  it("repeats a lost deletion response without reopening access and expires the receipt before cleanup",async()=>{
+    const h=harness(),a=await h.account();
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    expect((await h.call("/v1/me","GET",undefined,a.secret)).status).toBe(401);
+    expect((await h.call("/v1/me/budget","PUT",{monthly_cap_micros:1},a.secret)).status).toBe(401);
+    expect((await h.call("/v1/keys/openai","PUT",{confirmed_provider:"openai",secret:"sk-test-key-not-a-real-credential"},a.secret)).status).toBe(401);
+    expect(await count("account_deletion_receipts")).toBe(1);
+    h.advance(30*86400000+1);
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(401);
+    await maintenance(h.env,h.deps);
+    expect(await count("account_deletion_receipts")).toBe(0);
+    expect(h.calls).not.toHaveBeenCalled();
+  });
+  for(const recovery of ["retry","maintenance"])it(`resumes interrupted deletion through ${recovery} without duplicate refunds`,async()=>{
+    const h=harness(),a=await funded(h),q=await quoted(h,a);
+    await h.call("/v1/render/jobs","POST",{...imageRequest,...q,idempotency_key:crypto.randomUUID()},a.secret);
+    const original=h.env.DB;
+    let interrupt=true;
+    h.env.DB=new Proxy(original,{get(target,key){
+      if(key==="prepare")return (sql:string)=>{
+        if(interrupt && sql.startsWith("SELECT id FROM jobs WHERE account_id=")){interrupt=false;throw new Error("Synthetic cleanup interruption");}
+        return target.prepare(sql);
+      };
+      const value=Reflect.get(target,key,target);
+      return typeof value==="function"?value.bind(target):value;
+    }});
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(500);
+    expect((await h.call("/v1/me","GET",undefined,a.secret)).status).toBe(401);
+    h.env.DB=original;
+    if(recovery==="retry")expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    else await maintenance(h.env,h.deps);
+    expect((await h.call("/v1/me","DELETE",undefined,a.secret)).status).toBe(204);
+    expect((await getBalances(env.DB,a.account_id)).production).toBe(1000);
+    expect(await count("job_results")).toBe(0);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM ledger WHERE kind='job_refund'").first<{n:number}>())?.n).toBe(1);
+    expect((await env.DB.prepare("SELECT completed_at FROM account_deletion_receipts").first<{completed_at:number}>())?.completed_at).toBe(now);
+    expect(h.calls).toHaveBeenCalledTimes(1);
+  });
   it("has no synthetic inventory by default and enforces one funded window concurrently",async()=>{
     const h=harness(),a=await h.account();expect(await (await h.call("/v1/sponsorship/offers","GET",undefined,a.secret)).json()).toEqual({offers:[]});
     await sponsorSeed();const responses=await Promise.all([1,2].map(()=>h.call("/v1/sponsorship/windows","POST",{offer_id:"o",minutes:30},a.secret)));

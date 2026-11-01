@@ -27,7 +27,7 @@ No advertising identifiers, no tracking across apps or websites, no third-party 
 
 ## Deleting your data
 
-The planned Delete Account action revokes the account's access secret and removes stored provider keys and retained rendering results. It closes sponsored usage and resolves pending credit reservations. Minimal transaction and ledger records remain for refunds and store accounting; these financial identifiers are still data associated with the account.
+The planned Delete Account action revokes the account's access secret and removes stored provider keys and retained rendering results. It closes sponsored usage and resolves pending credit reservations. A one-way deletion receipt lets the app finish or confirm deletion after an interrupted connection. It allows only deletion retries, expires 30 days after cleanup finishes, and is removed during scheduled cleanup. Minimal transaction and ledger records remain for refunds and store accounting; these financial identifiers are still data associated with the account.
 
 Plan documents and exported originals can live separately from the app in Files, Finder or iCloud Drive. Delete those documents and any exports from their saved locations when you want to remove them. Uninstalling the app does not necessarily delete independent files, iCloud documents, backups or provider-held data.
 

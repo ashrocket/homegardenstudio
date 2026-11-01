@@ -1,4 +1,4 @@
-import { authenticate, createAccount, rateLimit } from "./auth";
+import { authenticate, createAccount, rateLimit, DELETION_RECEIPT_TTL_MS } from "./auth";
 import { listKeyMetas, putKey, deleteKey, loadSecret, rotateKeys, isProvider } from "./custody";
 import { HttpError, errorResponse, json, noContent } from "./errors";
 import { getBalances, getEntitlements, monthSpent } from "./ledger";
@@ -33,21 +33,28 @@ async function assist(ctx:AuthedCtx,input:Record<string,unknown>):Promise<Respon
 }
 async function deleteAccount(ctx:AuthedCtx):Promise<Response> {
   const db=ctx.env.DB,now=ctx.deps.now();
+  const secretHash=await sha256Hex(ctx.request.headers.get("authorization")!.slice("Bearer ".length));
   await db.batch([
+    db.prepare("INSERT OR IGNORE INTO account_deletion_receipts(secret_hash,account_id,created_at) SELECT ?1,id,?3 FROM accounts WHERE id=?2 AND deleted_at IS NULL").bind(secretHash,ctx.accountId,now),
     db.prepare("UPDATE accounts SET deleted_at=?2,secret_hash=NULL WHERE id=?1").bind(ctx.accountId,now),
     db.prepare("DELETE FROM provider_keys WHERE account_id=?").bind(ctx.accountId),
     db.prepare("UPDATE jobs SET recovery_at=?2,result_expires_at=CASE WHEN acknowledged_at IS NULL THEN ?2 ELSE result_expires_at END WHERE account_id=?1").bind(ctx.accountId,now),
     db.prepare("UPDATE quotes SET used_at=COALESCE(used_at,?2) WHERE account_id=?1").bind(ctx.accountId,now),
   ]);
-  const jobs=await db.prepare("SELECT id FROM jobs WHERE account_id=? AND (status='pending' OR (status='succeeded' AND acknowledged_at IS NULL))").bind(ctx.accountId).all<{id:string}>();
-  for(const job of jobs.results)await refundJob(ctx.env,job.id,now,"ACCOUNT_DELETED",true);
-  const windows=await db.prepare("SELECT id FROM sponsor_windows WHERE account_id=? AND settled_at IS NULL").bind(ctx.accountId).all<{id:string}>();
+  await finishAccountDeletion(ctx.env,ctx.accountId,now);
+  return noContent();
+}
+async function finishAccountDeletion(env:Env,accountId:string,now:number):Promise<void> {
+  const db=env.DB;
+  const jobs=await db.prepare("SELECT id FROM jobs WHERE account_id=? AND (status='pending' OR (status='succeeded' AND acknowledged_at IS NULL))").bind(accountId).all<{id:string}>();
+  for(const job of jobs.results)await refundJob(env,job.id,now,"ACCOUNT_DELETED",true);
+  const windows=await db.prepare("SELECT id FROM sponsor_windows WHERE account_id=? AND settled_at IS NULL").bind(accountId).all<{id:string}>();
   for(const w of windows.results)await db.batch([
     db.prepare("UPDATE sponsors SET budget_remaining_micros=budget_remaining_micros+COALESCE((SELECT remaining_micros FROM sponsor_windows WHERE id=?1 AND settled_at IS NULL),0) WHERE id=(SELECT sponsor_id FROM sponsor_windows WHERE id=?1)").bind(w.id),
     db.prepare("UPDATE sponsor_windows SET returned_micros=returned_micros+remaining_micros,remaining_micros=0,settled_at=?2 WHERE id=?1 AND settled_at IS NULL").bind(w.id,now),
   ]);
-  await db.prepare("DELETE FROM job_results WHERE job_id IN(SELECT id FROM jobs WHERE account_id=?)").bind(ctx.accountId).run();
-  return noContent();
+  await db.prepare("DELETE FROM job_results WHERE job_id IN(SELECT id FROM jobs WHERE account_id=?)").bind(accountId).run();
+  await db.prepare("UPDATE account_deletion_receipts SET completed_at=COALESCE(completed_at,?2) WHERE account_id=?1").bind(accountId,now).run();
 }
 export async function handle(request:Request,env:Env,deps:Deps=defaultDeps):Promise<Response> {
   const ctx:Ctx={request,env,deps,url:new URL(request.url),ip:request.headers.get("cf-connecting-ip")??"unknown"};
@@ -110,8 +117,11 @@ export async function handle(request:Request,env:Env,deps:Deps=defaultDeps):Prom
 export async function maintenance(env:Env,deps:Deps=defaultDeps):Promise<void> {
   const ctx:Ctx={env,deps,request:new Request("https://gateway.invalid/maintenance"),url:new URL("https://gateway.invalid/maintenance"),ip:"scheduled"};
   await recoverJobs(ctx);
+  const deletions=await env.DB.prepare("SELECT DISTINCT account_id FROM account_deletion_receipts WHERE completed_at IS NULL LIMIT 100").all<{account_id:string}>();
+  for(const row of deletions.results)await finishAccountDeletion(env,row.account_id,deps.now());
   await settleWindows(env,deps.now());
   await env.DB.prepare("DELETE FROM job_results WHERE job_id IN(SELECT j.id FROM jobs j JOIN accounts a ON a.id=j.account_id WHERE a.deleted_at IS NOT NULL)").run();
+  await env.DB.prepare("DELETE FROM account_deletion_receipts WHERE completed_at IS NOT NULL AND completed_at<=?").bind(deps.now()-DELETION_RECEIPT_TTL_MS).run();
   const rows=await env.DB.prepare("SELECT DISTINCT account_id FROM transactions WHERE status='pending_prerequisite' AND revoked_at IS NULL LIMIT 100").all<{account_id:string}>();
   for(const row of rows.results)await releasePending(env,row.account_id,deps.now());
 }
