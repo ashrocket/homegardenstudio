@@ -57,11 +57,19 @@ struct AccountSheet: View {
                         Text(account.isUnlocked ? "This platform is unlocked." : "Free plan: add up to 12 features. Existing work remains editable and exportable.")
                         if purchases.products.isEmpty { Text("Prices and products load directly from the App Store. Unavailable products cannot be purchased.").font(.caption) }
                         Button("Load App Store products") { run { try await purchases.loadProducts() } }.disabled(account.accountID == nil)
-                        ForEach(purchases.products) { product in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(product.name).font(.headline)
-                                Text(product.detail).font(.caption)
-                                Button("Buy for \(product.displayPrice)") { run { try await purchases.purchase(productID: product.id) } }.disabled(purchases.state == .purchasing)
+                        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                            ForEach(purchases.availableProducts(at: timeline.date)) { product in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(product.name).font(.headline)
+                                    Text(product.detail).font(.caption)
+                                    if let offer = purchases.creditOffer(productID: product.id, at: timeline.date), let deadline = offer.offerEnd {
+                                        Text("USD 15 rendering credit · 90-day launch offer").font(.headline)
+                                        Text("Offer ends \(deadline.formatted(date: .abbreviated, time: .standard)) (your local time).").font(.caption)
+                                        Text("Purchased credit does not expire. No automatic renewal. Future renders use the prices in their approved quotes.").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Button("Buy for \(product.displayPrice)") { run { try await purchases.purchase(productID: product.id) } }
+                                        .disabled(purchases.state == .purchasing || purchases.state == .loading)
+                                }
                             }
                         }
                         Text(purchaseStatus(purchases.state)).font(.caption)

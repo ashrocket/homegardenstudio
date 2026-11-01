@@ -60,6 +60,18 @@ nonisolated struct ProviderKeyMetadata: Codable, Equatable, Sendable, Identifiab
 nonisolated struct CreditProduct: Codable, Equatable, Sendable {
     let productId: String
     let creditMicros: Int
+    let offerStartsAt: Int64?
+    let offerEndsAt: Int64?
+    let creditExpires: Bool?
+
+    var offerEnd: Date? { offerEndsAt.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
+    func isAvailable(at date: Date) -> Bool {
+        guard productId == PurchaseCatalog.creditUSD15, creditMicros == 15_000_000, creditExpires == false,
+              let start = offerStartsAt, let end = offerEndsAt, start > 0 else { return false }
+        let (expectedEnd, overflow) = start.addingReportingOverflow(90 * 24 * 60 * 60 * 1000)
+        let milliseconds = date.timeIntervalSince1970 * 1000
+        return !overflow && end == expectedEnd && milliseconds.isFinite && milliseconds >= Double(start) && milliseconds < Double(end)
+    }
 }
 nonisolated struct GatewayAccount: Codable, Equatable, Sendable {
     let accountId: UUID

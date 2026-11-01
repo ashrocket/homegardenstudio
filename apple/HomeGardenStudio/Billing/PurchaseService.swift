@@ -12,13 +12,15 @@ nonisolated enum PurchaseState: Equatable, Sendable {
     private(set) var lastError: GatewayError?
     @ObservationIgnored private let account: AccountService
     @ObservationIgnored private let store: any StorePurchaseClient
+    @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var listener: Task<Void, Never>?
     @ObservationIgnored private var processing: Set<String> = []
     @ObservationIgnored private var operationInProgress = false
 
-    init(account: AccountService, store: any StorePurchaseClient = LiveStorePurchaseClient()) {
+    init(account: AccountService, store: any StorePurchaseClient = LiveStorePurchaseClient(), now: @escaping @Sendable () -> Date = { Date() }) {
         self.account = account
         self.store = store
+        self.now = now
     }
 
     deinit { listener?.cancel() }
@@ -42,13 +44,8 @@ nonisolated enum PurchaseState: Equatable, Sendable {
         state = .loading; lastError = nil
         do {
             try await account.refresh()
-            let allowed = allowedProducts()
-            let fetched = try await store.products(ids: allowed)
-            guard fetched.count <= allowed.count, Set(fetched.map(\.id)).count == fetched.count,
-                  fetched.allSatisfy({ allowed.contains($0.id) && !$0.displayPrice.isEmpty }) else {
-                throw GatewayError.invalidResponse
-            }
-            products = fetched
+            try await fetchProducts()
+            products = availableProducts(at: now())
             guard !products.isEmpty else { throw GatewayError.productUnavailable }
             state = .idle
         } catch { products = []; record(error); throw error }
@@ -56,12 +53,20 @@ nonisolated enum PurchaseState: Equatable, Sendable {
 
     func purchase(productID: String) async throws {
         try begin(); defer { operationInProgress = false }
-        lastError = nil
+        lastError = nil; state = .loading
         do {
             try await account.refresh()
             guard let accountID = account.accountID else { throw GatewayError.accountRequired }
             try requirePrerequisite(productID)
-            guard allowedProducts().contains(productID), products.contains(where: { $0.id == productID }) else {
+            guard allowedProducts(at: now()).contains(productID), products.contains(where: { $0.id == productID }) else {
+                products = availableProducts(at: now())
+                throw GatewayError.productUnavailable
+            }
+            // Refresh StoreKit price metadata too; never charge from a stale promotional row.
+            try await fetchProducts()
+            guard account.accountID == accountID, allowedProducts(at: now()).contains(productID),
+                  products.contains(where: { $0.id == productID }) else {
+                products = availableProducts(at: now())
                 throw GatewayError.productUnavailable
             }
             state = .purchasing
@@ -120,10 +125,24 @@ nonisolated enum PurchaseState: Equatable, Sendable {
         try await account.refresh()
     }
 
-    private func allowedProducts() -> Set<String> {
+    func availableProducts(at date: Date) -> [PurchaseProduct] {
+        let allowed = allowedProducts(at: date)
+        return products.filter { allowed.contains($0.id) }
+    }
+    func creditOffer(productID: String, at date: Date) -> CreditProduct? {
+        account.snapshot?.creditProducts.first { $0.productId == productID && $0.isAvailable(at: date) }
+    }
+    private func allowedProducts(at date: Date) -> Set<String> {
         guard let snapshot = account.snapshot else { return [] }
         return PurchaseCatalog.eligibleProducts(platformProducts: PurchaseCatalog.platformProducts,
-            entitlements: snapshot.entitlements).union(snapshot.creditProducts.map(\.productId))
+            entitlements: snapshot.entitlements).union(snapshot.creditProducts.filter { $0.isAvailable(at: date) }.map(\.productId))
+    }
+    private func fetchProducts() async throws {
+        let allowed = allowedProducts(at: now())
+        let fetched = try await store.products(ids: allowed)
+        guard fetched.count <= allowed.count, Set(fetched.map(\.id)).count == fetched.count,
+              fetched.allSatisfy({ allowed.contains($0.id) && !$0.displayPrice.isEmpty }) else { throw GatewayError.invalidResponse }
+        products = fetched.filter { PurchaseCatalog.unlocks.contains($0.id) || $0.hasApprovedCreditPrice }
     }
     private func requirePrerequisite(_ productID: String) throws {
         guard let entitlement = account.snapshot?.entitlements else { throw GatewayError.accountRequired }

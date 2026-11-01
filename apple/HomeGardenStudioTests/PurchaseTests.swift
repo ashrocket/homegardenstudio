@@ -11,9 +11,12 @@ import XCTest
     var syncCount = 0
     var requestedIDs: Set<String> = []
     var includedCurrent = false
-    func products(ids: Set<String>) async throws -> [PurchaseProduct] { requestedIDs = ids; return offered }
+    var productLoadCount = 0
+    var beforeProducts: (() -> Void)?
+    var beforePurchase: (() -> Void)?
+    func products(ids: Set<String>) async throws -> [PurchaseProduct] { requestedIDs = ids; productLoadCount += 1; beforeProducts?(); return offered }
     func purchase(productID: String, accountToken: UUID) async throws -> StorePurchaseOutcome {
-        purchases.append((productID, accountToken)); return outcome
+        beforePurchase?(); purchases.append((productID, accountToken)); return outcome
     }
     func sync() async throws { syncCount += 1 }
     func transactions(includeCurrentEntitlements: Bool) async throws -> [StoreTransaction] {
@@ -116,12 +119,13 @@ nonisolated final class PurchaseTests: XCTestCase {
     }
 
     @MainActor func testProductsUseStorePricesAndOnlyServerConfiguredCreditIDs() async throws {
-        let credit = PurchaseCatalog.prefix + "credit.synthetic"
-        let transport = MockGatewayTransport([try ServiceFixture.me(credits: [["product_id": credit, "credit_micros": 700]])])
+        let credit = PurchaseCatalog.creditUSD15
+        let start: Int64 = 1_000_000, end: Int64 = 1_000_000 + 90 * 24 * 60 * 60 * 1000
+        let transport = MockGatewayTransport([try ServiceFixture.me(credits: [["product_id": credit, "credit_micros": 15_000_000, "offer_starts_at": start, "offer_ends_at": end, "credit_expires": false]])])
         let account = try ServiceFixture.account(transport)
         let store = MockStorePurchaseClient()
         store.offered = [.init(id: platformProduct, name: "Localized unlock", detail: "App Store detail", displayPrice: "€2,29")]
-        let purchases = PurchaseService(account: account, store: store)
+        let purchases = PurchaseService(account: account, store: store, now: { Date(timeIntervalSince1970: 1001) })
         try await purchases.loadProducts()
         XCTAssertEqual(purchases.products[0].displayPrice, "€2,29")
         XCTAssertEqual(store.requestedIDs, PurchaseCatalog.platformProducts.subtracting([PurchaseCatalog.iosUpgrade, PurchaseCatalog.macUpgrade]).union([credit]))

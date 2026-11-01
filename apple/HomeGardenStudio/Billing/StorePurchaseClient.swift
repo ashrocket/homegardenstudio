@@ -3,6 +3,7 @@ import StoreKit
 
 nonisolated enum PurchaseCatalog {
     static let prefix = "com.ashleyraiteri.homegardenstudio."
+    static let creditUSD15 = prefix + "credit.usd15"
     static let ios = prefix + "unlock.ios"
     static let mac = prefix + "unlock.mac"
     static let bundle = prefix + "unlock.bundle"
@@ -31,6 +32,17 @@ nonisolated struct PurchaseProduct: Sendable, Identifiable, Equatable {
     let name: String
     let detail: String
     let displayPrice: String
+    let price: Decimal?
+    let currencyCode: String?
+    init(id: String, name: String, detail: String, displayPrice: String, price: Decimal? = nil, currencyCode: String? = nil) {
+        self.id = id; self.name = name; self.detail = detail; self.displayPrice = displayPrice
+        self.price = price; self.currencyCode = currencyCode
+    }
+    var hasApprovedCreditPrice: Bool {
+        guard id == PurchaseCatalog.creditUSD15, let price, let currencyCode, !currencyCode.isEmpty, price > 0 else { return false }
+        // US price is owner-approved. Other storefronts show Apple's actual localized amount.
+        return currencyCode != "USD" || price == Decimal(10)
+    }
 }
 nonisolated struct VerifiedStoreTransaction: Sendable {
     let id: String
@@ -68,7 +80,7 @@ nonisolated enum StorePurchaseOutcome: Sendable {
                 ? product.type == .nonConsumable : product.type == .consumable)
         }.map { ($0.id, $0) })
         return loaded.values.map { PurchaseProduct(id: $0.id, name: $0.displayName,
-                                                  detail: $0.description, displayPrice: $0.displayPrice) }
+                                                  detail: $0.description, displayPrice: $0.displayPrice, price: $0.price, currencyCode: $0.priceFormatStyle.currencyCode) }
             .sorted { $0.id < $1.id }
     }
 
