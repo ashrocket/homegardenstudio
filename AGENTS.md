@@ -6,7 +6,7 @@ Keep the Rust engine independent of the Apple UI. Prefer native SwiftUI, Reality
 
 Use the installed HaiKrew/crew-overseer workflow for bounded parallel implementation and independent review. One owner per file group and build directory. Run required checks and inspect actual results before reporting completion.
 
-The implementation owner is the assigned Claude crew. The separate Codex monitor reviews evidence and writes private coordination reports; it does not race source edits. The parent Codex session owns the separate private garden editor and must not be displaced.
+The active Codex overseer assigns bounded implementation owners and independent reviewers. Check `.coordination/CODEX-STATUS.md` for current ownership before editing or building. Preserve interrupted worktrees and inspect their changes before resuming. Do not launch or revive an older crew alongside the current owners. The separate private garden editor and private AI lab retain their own ownership.
 
 Private launch briefs, ownership, status and reports are under `.coordination/`, which is Git-ignored. Read the role-specific brief there. Commit only deliberately selected, audited public files. Never add `.coordination`, customer data, local auth profiles, generated signing assets or environment secrets.
 
